@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -173,4 +174,17 @@ func (t *Telegram) Send(ctx context.Context, chatID int64, text string) error {
 // NotifyOwner sends a message to the owner's private chat.
 func (t *Telegram) NotifyOwner(ctx context.Context, text string) error {
 	return t.Send(ctx, t.ownerID, text)
+}
+
+// SendDocument uploads a file to the owner's chat.
+func (t *Telegram) SendDocument(ctx context.Context, filename string, data io.Reader, caption string) error {
+	_, err := t.bot.SendDocument(ctx, &tg.SendDocumentParams{
+		ChatID:   t.ownerID,
+		Document: &models.InputFileUpload{Filename: filename, Data: data},
+		Caption:  caption,
+	})
+	if err != nil {
+		return errors.New(t.Redact(err))
+	}
+	return nil
 }

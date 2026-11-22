@@ -104,3 +104,18 @@ Angka ukur (agen + overlay, Windows, 12 core, layar 100%):
 
 Menunggu pemilik:
 - Smoke test di laptop dengan server produksi (DEPLOY.md bagian 12), termasuk tekan `Alt+Space` sungguhan dan layar ber-DPI > 100%.
+
+## Fase 5: Kemampuan tambahan dan operasional [x] (kode selesai; menunggu kunci Tavily + cron backup di VPS)
+- [x] Pencarian web: riset & keputusan di DECISIONS (Tavily, dipilih pemilik); `/cari` dan "cari ..." di overlay; jawaban + sumber dari kode; jalur tanpa tool calling
+- [x] Backup: `scripts/backup-db.sh` (pg_dump harian, simpan 7) + instruksi cron **[PEMILIK]**; `scripts/restore-db.sh` (restore ke DB baru, menolak menimpa); restore terbukti di DB uji lokal (jumlah baris & total detik identik)
+- [x] Pemantauan: `/healthz` memeriksa DB (503 bila mati); peringatan Telegram agen tidak terlihat > 24 jam (sekali per kejadian + pemulihan) dan LLM gagal ≥ 3 kali beruntun (cooldown 1 jam)
+- [ ] Aksi jarak jauh (opsional): sengaja tidak dikerjakan (lihat DECISIONS)
+- [x] Penyempurnaan: zona waktu/DST perangkat (sudah aman by design, dicatat), pembersihan `activity_buckets` > 180 hari (+ event ter-ack > 30 hari), `/export` (JSON.gz via Telegram), dokumentasi akhir (README, ARCHITECTURE lokal)
+
+Gerbang fase:
+- tes: lulus (14 paket, termasuk integrasi Postgres)
+- restore backup terbukti: lulus (lokal, Postgres 17)
+- anggaran 9: server RSS lokal ≤ 8 MiB; agen + overlay 25 MB tersembunyi / 26 MB terlihat
+
+Menunggu pemilik:
+- `TAVILY_API_KEY` (DEPLOY.md bagian 14), cron backup + uji restore di VPS (bagian 13), dan semua langkah deploy sebelumnya.

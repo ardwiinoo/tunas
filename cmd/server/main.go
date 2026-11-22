@@ -8,6 +8,8 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"flag"
@@ -29,7 +31,9 @@ import (
 	"github.com/ardwiinoo/tunas/internal/config"
 	"github.com/ardwiinoo/tunas/internal/forms"
 	"github.com/ardwiinoo/tunas/internal/llm"
+	"github.com/ardwiinoo/tunas/internal/ops"
 	"github.com/ardwiinoo/tunas/internal/reminders"
+	"github.com/ardwiinoo/tunas/internal/search"
 	"github.com/ardwiinoo/tunas/internal/store"
 	"github.com/ardwiinoo/tunas/modes"
 )
@@ -87,21 +91,30 @@ func serve() error {
 	if err != nil {
 		return err
 	}
+	var tgBot *bot.Telegram // assigned below; used by monitor/export closures
+	monitor := ops.NewMonitor(db, notifierFunc(func(ctx context.Context, text string) error {
+		return tgBot.NotifyOwner(ctx, text)
+	}), time.Now, log)
 	var completer llm.Completer = llm.Disabled{}
 	if cfg.LLMEnabled() {
 		completer = &llm.Capped{
-			Inner: llm.New(cfg.BifrostBaseURL, cfg.BifrostAPIKey, cfg.LLMPrimaryModel, cfg.LLMFallbackModels, log),
+			Inner: monitor.Watch(llm.New(cfg.BifrostBaseURL, cfg.BifrostAPIKey, cfg.LLMPrimaryModel, cfg.LLMFallbackModels, log)),
 			Usage: db, Cap: cfg.LLMDailyRequestCap, Now: time.Now, Loc: cfg.Location,
 		}
 	}
 	log.Info("llm", "enabled", cfg.LLMEnabled(), "primary", cfg.LLMPrimaryModel, "fallbacks", len(cfg.LLMFallbackModels))
 	asst := assist.New(db, completer, ms, cfg.Location, time.Now, log)
+	searcher := search.NewTavily(cfg.TavilyAPIKey)
 
 	cmds := &bot.Commands{DB: db, Loc: cfg.Location, Now: time.Now, Log: log}
 	cmds.Extra = func(ctx context.Context, cmd, args string) (string, bool) {
 		switch cmd {
 		case "tanya":
 			return asst.Ask(ctx, args), true
+		case "cari":
+			return asst.Search(ctx, searcher, args), true
+		case "export":
+			return exportData(ctx, db, tgBot, log), true
 		case "form":
 			reply, err := asst.SetForm(ctx, args)
 			if err != nil {
@@ -112,7 +125,7 @@ func serve() error {
 		}
 		return "", false
 	}
-	tgBot, err := bot.NewTelegram(cfg.TelegramBotToken, cfg.TelegramOwnerID, cmds, log)
+	tgBot, err = bot.NewTelegram(cfg.TelegramBotToken, cfg.TelegramOwnerID, cmds, log)
 	if err != nil {
 		return err
 	}
@@ -123,6 +136,9 @@ func serve() error {
 	httpSrv := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: api.New(log, api.Options{DB: db, Chat: func(ctx context.Context, form, text string) string {
+			if q, ok := cutPrefixFold(text, "cari "); ok {
+				return asst.Search(ctx, searcher, q)
+			}
 			f := forms.Form(form)
 			if !forms.Valid(f) {
 				f = asst.ActiveForm(ctx)
@@ -144,6 +160,7 @@ func serve() error {
 	wg.Go(func() { sched.Run(ctx) })
 	wg.Go(func() { _ = tgBot.Run(ctx) })
 	wg.Go(func() { asst.RunDaily(ctx, tgBot) })
+	wg.Go(func() { monitor.Run(ctx, 5*time.Minute) })
 
 	select {
 	case <-ctx.Done():
@@ -262,4 +279,39 @@ func deviceCmd(args []string, out io.Writer) error {
 		return errors.New(deviceUsage)
 	}
 	return nil
+}
+
+type notifierFunc func(ctx context.Context, text string) error
+
+func (f notifierFunc) NotifyOwner(ctx context.Context, text string) error { return f(ctx, text) }
+
+// exportData sends all owner data as a gzipped JSON document.
+func exportData(ctx context.Context, db *store.DB, tg *bot.Telegram, log *slog.Logger) string {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	now := time.Now()
+	if err := db.Export(ctx, zw, now); err != nil {
+		log.Error("export failed", "err", err)
+		return "Maaf, ekspor gagal."
+	}
+	if err := zw.Close(); err != nil {
+		return "Maaf, ekspor gagal."
+	}
+	if buf.Len() > 45<<20 {
+		return "Data terlalu besar untuk Telegram (> 45 MB). Pakai backup pg_dump di VPS."
+	}
+	name := "tunas-export-" + now.Format("20060102-1504") + ".json.gz"
+	if err := tg.SendDocument(ctx, name, &buf, "📦 Ekspor data Tunas"); err != nil {
+		log.Error("export upload failed", "err", err)
+		return "Maaf, gagal mengirim berkas ekspor."
+	}
+	return ""
+}
+
+// cutPrefixFold is strings.CutPrefix ignoring ASCII case.
+func cutPrefixFold(s, prefix string) (string, bool) {
+	if len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix) {
+		return s[len(prefix):], true
+	}
+	return s, false
 }

@@ -26,6 +26,7 @@ type Server struct {
 	LLMPrimaryModel    string
 	LLMFallbackModels  []string
 	LLMDailyRequestCap int
+	TavilyAPIKey       string
 	LogLevel           slog.Level
 }
 
@@ -48,6 +49,7 @@ func LoadServer(getenv func(string) string) (*Server, error) {
 		BifrostBaseURL:   strings.TrimRight(orDefault(get("BIFROST_BASE_URL"), "https://gateway.ardwiinoo.my.id/v1"), "/"),
 		BifrostAPIKey:    get("BIFROST_API_KEY"),
 		LLMPrimaryModel:  get("LLM_PRIMARY_MODEL"),
+		TavilyAPIKey:     get("TAVILY_API_KEY"),
 	}
 
 	for _, k := range []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_OWNER_ID", "DATABASE_URL", "PUBLIC_BASE_URL"} {
