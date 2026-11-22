@@ -194,3 +194,18 @@ func TestChat(t *testing.T) {
 		t.Error("chat without token")
 	}
 }
+
+func TestHealthzChecksDB(t *testing.T) {
+	h := newHarness(t)
+	resp, err := http.Get(h.srv.URL + "/healthz")
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("healthz = %v %v", resp, err)
+	}
+	resp.Body.Close()
+	h.db.Close()
+	resp, err = http.Get(h.srv.URL + "/healthz")
+	if err != nil || resp.StatusCode != 503 {
+		t.Fatalf("healthz with closed db = %v %v", resp.StatusCode, err)
+	}
+	resp.Body.Close()
+}

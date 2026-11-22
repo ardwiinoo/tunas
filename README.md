@@ -7,7 +7,16 @@ Asisten pribadi 24/7 untuk satu pengguna: bot Telegram (tugas, pengingat, ringka
 | Bagian | Lokasi | Keterangan |
 |---|---|---|
 | Server | `cmd/server` | bot Telegram (long polling), scheduler pengingat, API agen. Docker, di-deploy otomatis dari `main`. |
-| Agen | `cmd/agent` | `tunas-agent.exe` untuk Windows: pelacak aplikasi aktif, sinkron, overlay. |
+| Agen | `cmd/agent` | `tunas-agent.exe` untuk Windows: pelacak aplikasi aktif, sinkron, karakter Tunas di layar (Alt+Space untuk ngobrol). |
+
+## Perintah Telegram
+
+`/task`, `/tasks`, `/done`, `/remind`, `/reminders`, `/cancel`, `/today`, `/tanya`, `/form`, `/cari`, `/export`, `/ping`, `/help`. Kalimat biasa ("ingatkan aku jam 5 sore kirim laporan") dipahami lewat LLM dan selalu dikonfirmasi dengan tombol Ya/Batal.
+
+## Skrip
+
+- `scripts/backup-db.sh`, `scripts/restore-db.sh`: backup harian `pg_dump` (simpan 7) dan restore ke database baru.
+- `scripts/measure-agent.ps1`: ukur memori/CPU agen di Windows.
 
 ## Pengembangan
 

@@ -43,6 +43,8 @@ const helpText = `Halo, aku Tunas 🌱
 /today — ringkasan aktivitas hari ini
 /tanya <pertanyaan> — tanya data aktivitas
 /form <id>|auto — atur form (biasa, fokus, tidur, senang, ingat, tegur)
+/cari <kueri> — cari di web (dengan sumber)
+/export — unduh semua data (JSON.gz)
 /ping — cek hidup
 
 Bisa juga kirim kalimat biasa, mis. "ingatkan aku jam 5 sore kirim laporan".`

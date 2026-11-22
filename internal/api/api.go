@@ -68,8 +68,17 @@ func (s *Server) routes() {
 	s.registerAgentRoutes(v1)
 }
 
-func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
+// healthz reports "ok" when the server (and its database, if configured) works.
+func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if s.db != nil {
+		if err := s.db.Healthy(r.Context()); err != nil {
+			s.log.Warn("healthz: database unavailable", "err", err)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("db unavailable"))
+			return
+		}
+	}
 	_, _ = w.Write([]byte("ok"))
 }
 
