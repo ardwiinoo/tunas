@@ -64,11 +64,17 @@ func New(db *store.DB, c llm.Completer, ms map[string]modes.Mode, loc *time.Loca
 	return &Assistant{DB: db, LLM: c, Modes: ms, Loc: loc, Now: now, Log: log, pending: map[string]pendingAction{}}
 }
 
-// Replies when the LLM cannot answer. The bot always says something, never stays silent.
+// Replies when the LLM cannot answer. The bot always says something, never
+// stays silent, and says why: configuration (owner must act) vs quota vs
+// provider trouble.
 const (
 	msgLLMFailed   = "LLM sedang bermasalah, coba lagi."
 	msgLLMCap      = "Jatah LLM hari ini habis. Sementara pakai perintah ya, ketik /help."
 	msgLLMDisabled = "AI belum diaktifkan di server. Pakai perintah ya, ketik /help."
+	msgLLMBlocked  = "Model AI ditolak gateway (izin/konfigurasi). Cek virtual key Bifrost dan nama model di .env; detailnya sudah kukirim sebagai peringatan."
+	msgLLMQuota    = "Kuota provider AI sedang habis atau dibatasi. Coba lagi nanti."
+	msgLLMDown     = "Provider AI sedang down. Coba lagi sebentar lagi."
+	msgLLMTimeout  = "AI terlalu lama menjawab. Coba lagi."
 )
 
 // LLMFailText is the user-facing reply for a Complete error.
@@ -78,6 +84,14 @@ func LLMFailText(err error) string {
 		return msgLLMCap
 	case llm.KindDisabled:
 		return msgLLMDisabled
+	case llm.KindBlocked:
+		return msgLLMBlocked
+	case llm.KindQuota:
+		return msgLLMQuota
+	case llm.KindDown:
+		return msgLLMDown
+	case llm.KindTimeout:
+		return msgLLMTimeout
 	}
 	return msgLLMFailed
 }

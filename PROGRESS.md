@@ -99,6 +99,7 @@ Menunggu pemilik:
   - Telegram: "typing" diulang tiap 4 detik; LLM gagal → balasan sesuai sebab (bukan diam).
   - Server: 9 detik per model lalu fallback, total maks 20 detik, model dan durasi dicatat di log.
   - Diuji end-to-end lokal dengan gateway palsu: model utama lambat → fallback menjawab dalam 11 detik; semua lambat → "Server lama menjawab" setelah 18 detik; server mati → "Tidak bisa hubungi server"; batas harian → "Jatah LLM hari ini habis".
+- [x] Perbaikan fallback LLM: 403 dari gateway tidak lagi menghentikan rantai; semua kegagalan per model lanjut ke model berikutnya. Log per percobaan (model, status). Pesan dibedakan: model diblokir (konfigurasi, plus peringatan ke pemilik), kuota provider habis, provider down, timeout. Diuji dengan gateway palsu: primary 403 → fallback 1 429 → fallback 2 menjawab.
 - [x] Status agen:
   - Heartbeat tiap 60 detik (`POST /v1/agent/heartbeat`): versi agen dan status jeda disimpan per perangkat (migrasi 0002).
   - `/status`: online/offline sejak kapan, versi, status jeda, event tertunda. `/settings notif_status on|off`.

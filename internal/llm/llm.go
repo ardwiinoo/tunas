@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -36,21 +37,110 @@ var (
 
 // Failure kinds, for user-facing messages and the agent chat API.
 const (
-	KindCap      = "llm_cap"
-	KindTimeout  = "llm_timeout"
-	KindDisabled = "llm_disabled"
-	KindFailed   = "llm_failed"
+	KindCap      = "llm_cap"      // our own daily request cap
+	KindDisabled = "llm_disabled" // no key/model configured
+	KindBlocked  = "llm_blocked"  // gateway refused the model (401/403/404): configuration problem
+	KindQuota    = "llm_quota"    // provider quota or rate limit (429)
+	KindTimeout  = "llm_timeout"  // too slow
+	KindDown     = "llm_down"     // provider error (5xx, network, empty answer)
+	KindFailed   = "llm_failed"   // anything else
 )
 
-// Kind classifies a Complete error.
+// Kind classifies a Complete error. For a FailedError (every model failed)
+// it is the kind that best explains the whole failure.
 func Kind(err error) string {
+	var fe *FailedError
 	switch {
+	case err == nil:
+		return ""
+	case errors.As(err, &fe):
+		return fe.Kind()
 	case errors.Is(err, ErrCap):
 		return KindCap
 	case errors.Is(err, ErrDisabled):
 		return KindDisabled
+	}
+	return attemptKind(err)
+}
+
+// attemptKind classifies one model's failure.
+func attemptKind(err error) string {
+	var se *StatusError
+	switch {
+	case errors.As(err, &se):
+		switch {
+		case se.Code == http.StatusUnauthorized || se.Code == http.StatusForbidden || se.Code == http.StatusNotFound:
+			return KindBlocked
+		case se.Code == http.StatusTooManyRequests:
+			return KindQuota
+		case se.Code >= 500:
+			return KindDown
+		}
+		return KindFailed
 	case errors.Is(err, ErrTimeout), errors.Is(err, context.DeadlineExceeded):
 		return KindTimeout
+	case errors.Is(err, ErrEmpty):
+		return KindDown
+	}
+	var ne net.Error
+	if errors.As(err, &ne) {
+		return KindDown
+	}
+	return KindFailed
+}
+
+// Attempt is one model's failed try.
+type Attempt struct {
+	Model string
+	Kind  string
+	Err   error
+}
+
+// FailedError is returned when every model failed.
+type FailedError struct{ Attempts []Attempt }
+
+func (e *FailedError) Error() string {
+	parts := make([]string, len(e.Attempts))
+	for i, a := range e.Attempts {
+		parts[i] = a.Model + ": " + a.Err.Error()
+	}
+	return fmt.Sprintf("all %d llm models failed (%s)", len(e.Attempts), strings.Join(parts, "; "))
+}
+
+// Unwrap exposes every attempt's error to errors.Is/As.
+func (e *FailedError) Unwrap() []error {
+	errs := make([]error, len(e.Attempts))
+	for i, a := range e.Attempts {
+		errs[i] = a.Err
+	}
+	return errs
+}
+
+// Kind picks the explanation for the user: blocked only if every model was
+// refused (pure configuration problem); otherwise the provider-side cause
+// of the models that were allowed to run, preferring "down" over "timeout"
+// over "quota" when they differ.
+func (e *FailedError) Kind() string {
+	seen := map[string]bool{}
+	for _, a := range e.Attempts {
+		if a.Kind != KindBlocked {
+			seen[a.Kind] = true
+		}
+	}
+	switch {
+	case len(e.Attempts) == 0:
+		return KindTimeout // the budget ran out before any model was tried
+	case len(seen) == 0:
+		return KindBlocked
+	case len(seen) == 1:
+		for k := range seen {
+			return k
+		}
+	}
+	for _, k := range []string{KindDown, KindTimeout, KindQuota} {
+		if seen[k] {
+			return k
+		}
 	}
 	return KindFailed
 }
@@ -68,6 +158,9 @@ type Client struct {
 	Total     time.Duration // budget for the whole call
 	HTTP      *http.Client
 	Log       *slog.Logger
+	// OnBlocked is called when the gateway refuses a model (401/403/404),
+	// even if a fallback then answers: a configuration problem for the owner.
+	OnBlocked func(model string, status int)
 }
 
 // Default budgets.
@@ -108,9 +201,10 @@ type StatusError struct{ Code int }
 
 func (e *StatusError) Error() string { return fmt.Sprintf("llm gateway returned %d", e.Code) }
 
-// Complete tries each model in order until one answers. Timeouts, network
-// errors, 429/5xx and empty answers move on to the next model; an auth
-// error (401/403) stops at once since every model would fail the same way.
+// Complete tries each model in order until one answers. Any per-model
+// failure (401/403/404, 429, 5xx, timeout, empty answer, network) moves on
+// to the next model; only when all have failed does it return a
+// *FailedError. Every attempt is logged with the model and its status.
 func (c *Client) Complete(ctx context.Context, msgs []Message) (string, error) {
 	if c.APIKey == "" || c.Model == "" {
 		return "", ErrDisabled
@@ -118,35 +212,46 @@ func (c *Client) Complete(ctx context.Context, msgs []Message) (string, error) {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, c.Total)
 	defer cancel()
-	var lastErr error
+	fe := &FailedError{}
 	models := append([]string{c.Model}, c.Fallbacks...)
 	for i, model := range models {
 		dl, _ := ctx.Deadline()
 		left := time.Until(dl)
-		if left < minAttempt {
-			if lastErr == nil {
-				lastErr = ErrTimeout
-			}
+		if i > 0 && left < minAttempt { // the primary is always tried
+			c.Log.Warn("llm budget exhausted", "skipped_models", len(models)-i, "total_ms", time.Since(start).Milliseconds())
 			break
 		}
+		t0 := time.Now()
 		content, err := c.tryModel(ctx, model, msgs, min(c.PerModel, left))
 		if err == nil {
-			c.Log.Info("llm served", "model", model, "attempt", i+1, "total_ms", time.Since(start).Milliseconds())
+			c.Log.Info("llm attempt", "model", model, "attempt", i+1, "status", "ok",
+				"ms", time.Since(t0).Milliseconds(), "total_ms", time.Since(start).Milliseconds())
 			return content, nil
 		}
-		lastErr = err
-		c.Log.Warn("llm model failed", "model", model, "attempt", i+1, "kind", Kind(err), "err", err,
-			"total_ms", time.Since(start).Milliseconds())
-		if ctx.Err() != nil && !errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
-			break // caller cancelled
-		}
+		kind := attemptKind(err)
+		fe.Attempts = append(fe.Attempts, Attempt{Model: model, Kind: kind, Err: err})
+		c.Log.Warn("llm attempt", "model", model, "attempt", i+1, "status", statusOf(err), "kind", kind,
+			"err", err, "ms", time.Since(t0).Milliseconds())
 		var se *StatusError
-		if errors.As(err, &se) && (se.Code == http.StatusUnauthorized || se.Code == http.StatusForbidden) {
-			break
+		if kind == KindBlocked && errors.As(err, &se) && c.OnBlocked != nil {
+			c.OnBlocked(model, se.Code)
+		}
+		if ctx.Err() != nil && !errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
+			return "", ctx.Err() // the caller gave up (shutdown); not an LLM failure
 		}
 	}
-	c.Log.Warn("llm all models failed", "kind", Kind(lastErr), "total_ms", time.Since(start).Milliseconds())
-	return "", lastErr
+	c.Log.Warn("llm all models failed", "kind", fe.Kind(), "attempts", len(fe.Attempts),
+		"total_ms", time.Since(start).Milliseconds())
+	return "", fe
+}
+
+// statusOf is the HTTP status for logs, or the error kind when there was none.
+func statusOf(err error) string {
+	var se *StatusError
+	if errors.As(err, &se) {
+		return fmt.Sprint(se.Code)
+	}
+	return attemptKind(err)
 }
 
 // tryModel calls one model within budget. If the model spent all tokens

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -172,4 +173,47 @@ func TestCleanupAndExport(t *testing.T) {
 	if strings.Contains(buf.String(), "token_hash") {
 		t.Fatal("export must not contain token hashes")
 	}
+}
+
+func TestModelBlockedAlertOncePerModel(t *testing.T) {
+	now := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
+	n := &syncNotes{}
+	m := NewMonitor(nil, n, func() time.Time { return now }, time.UTC, slog.New(slog.DiscardHandler))
+	m.ModelBlocked("p/primary", 403)
+	m.ModelBlocked("p/primary", 403) // within the cooldown
+	m.ModelBlocked("f/one", 401)
+	deadline := time.Now().Add(2 * time.Second)
+	for n.count() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond) // a third (duplicate) alert would land by now
+	msgs := n.all()
+	if len(msgs) != 2 {
+		t.Fatalf("alerts = %q", msgs)
+	}
+	joined := strings.Join(msgs, "\n")
+	if !strings.Contains(joined, "p/primary (HTTP 403)") || !strings.Contains(joined, "f/one (HTTP 401)") ||
+		!strings.Contains(joined, "virtual key") {
+		t.Fatalf("alerts = %q", msgs)
+	}
+}
+
+type syncNotes struct {
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (s *syncNotes) NotifyOwner(_ context.Context, text string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.msgs = append(s.msgs, text)
+	return nil
+}
+
+func (s *syncNotes) count() int { s.mu.Lock(); defer s.mu.Unlock(); return len(s.msgs) }
+
+func (s *syncNotes) all() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.msgs...)
 }

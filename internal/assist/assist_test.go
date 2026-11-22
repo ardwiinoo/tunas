@@ -3,6 +3,7 @@ package assist
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"regexp"
 	"strings"
@@ -162,8 +163,11 @@ func TestModelTimeIsValidatedByCode(t *testing.T) {
 }
 
 func TestLLMUnavailableFallsBack(t *testing.T) {
-	a, _, _ := setup(t, &fakeLLM{err: &llm.StatusError{Code: 429}})
-	if r := a.HandleText(context.Background(), "halo"); r.Text != msgLLMFailed {
+	a, _, _ := setup(t, &fakeLLM{err: &llm.FailedError{Attempts: []llm.Attempt{
+		{Model: "p", Kind: llm.KindBlocked, Err: &llm.StatusError{Code: 403}},
+		{Model: "f", Kind: llm.KindQuota, Err: &llm.StatusError{Code: 429}},
+	}}})
+	if r := a.HandleText(context.Background(), "halo"); r.Text != msgLLMQuota {
 		t.Fatalf("reply = %q", r.Text)
 	}
 	a2, _, _ := setup(t, llm.Disabled{})
@@ -374,5 +378,32 @@ func TestSearch(t *testing.T) {
 	}
 	if got := a2.Search(context.Background(), &fakeSearch{}, "q"); !strings.Contains(got, "Tidak ada hasil") {
 		t.Errorf("empty → %q", got)
+	}
+}
+
+func TestLLMFailTextPerKind(t *testing.T) {
+	all := func(codes ...int) error {
+		fe := &llm.FailedError{}
+		for _, c := range codes {
+			err := &llm.StatusError{Code: c}
+			fe.Attempts = append(fe.Attempts, llm.Attempt{Model: "m", Kind: llm.Kind(err), Err: err})
+		}
+		return fe
+	}
+	for err, want := range map[error]string{
+		all(403, 403, 404):                  msgLLMBlocked,
+		all(403, 429, 429):                  msgLLMQuota,
+		all(403, 502, 503):                  msgLLMDown,
+		llm.ErrCap:                          msgLLMCap,
+		llm.ErrDisabled:                     msgLLMDisabled,
+		fmt.Errorf("x: %w", llm.ErrTimeout): msgLLMTimeout,
+		all(400):                            msgLLMFailed,
+	} {
+		if got := LLMFailText(err); got != want {
+			t.Errorf("%v → %q, want %q", err, got, want)
+		}
+	}
+	if msgLLMBlocked == msgLLMQuota || msgLLMQuota == msgLLMDown || msgLLMBlocked == msgLLMDown {
+		t.Fatal("configuration, quota and outage must read differently")
 	}
 }

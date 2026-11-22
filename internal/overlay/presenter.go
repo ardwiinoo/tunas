@@ -103,6 +103,12 @@ func FailText(f agent.ChatFail) string {
 		return "Jatah LLM hari ini habis"
 	case agent.FailLLM:
 		return "LLM sedang bermasalah, coba lagi"
+	case agent.FailBlocked:
+		return "Model AI diblokir gateway (cek konfigurasi)"
+	case agent.FailQuota:
+		return "Kuota provider AI habis, coba nanti"
+	case agent.FailDown:
+		return "Provider AI sedang down, coba lagi"
 	case agent.FailDisabled:
 		return "AI belum diaktifkan di server"
 	case agent.FailAuth:

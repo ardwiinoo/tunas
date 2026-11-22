@@ -97,8 +97,10 @@ func serve() error {
 	}), time.Now, cfg.Location, log)
 	var completer llm.Completer = llm.Disabled{}
 	if cfg.LLMEnabled() {
+		llmClient := llm.New(cfg.BifrostBaseURL, cfg.BifrostAPIKey, cfg.LLMPrimaryModel, cfg.LLMFallbackModels, log)
+		llmClient.OnBlocked = monitor.ModelBlocked
 		completer = &llm.Capped{
-			Inner: monitor.Watch(llm.New(cfg.BifrostBaseURL, cfg.BifrostAPIKey, cfg.LLMPrimaryModel, cfg.LLMFallbackModels, log)),
+			Inner: monitor.Watch(llmClient),
 			Usage: db, Cap: cfg.LLMDailyRequestCap, Now: time.Now, Loc: cfg.Location,
 		}
 	}

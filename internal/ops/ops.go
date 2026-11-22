@@ -161,6 +161,21 @@ func (m *Monitor) Run(ctx context.Context, interval time.Duration) {
 	}
 }
 
+// ModelBlocked alerts the owner that the gateway refused a model (401/403/
+// 404). That is a configuration problem (virtual key permissions or a wrong
+// model name), so it is reported even when a fallback answered. At most once
+// per AlertCooldown per model; sent in the background so the chat is not
+// held up.
+func (m *Monitor) ModelBlocked(model string, status int) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		m.alert(ctx, "llm_blocked:"+model, fmt.Sprintf(
+			"⚠️ Gateway menolak model %s (HTTP %d). Ini masalah konfigurasi: cek izin virtual key Bifrost "+
+				"untuk model itu, atau nama model di LLM_PRIMARY_MODEL / LLM_FALLBACK_MODELS.", model, status))
+	}()
+}
+
 // Watch wraps an LLM completer and alerts after LLMFailureThreshold
 // consecutive failures (cap/disabled do not count).
 func (m *Monitor) Watch(inner llm.Completer) llm.Completer {
