@@ -13,6 +13,8 @@ import (
 // maxBody is the request body limit (1 MB).
 const maxBody = 1 << 20
 
+const errInternal = "internal error"
+
 // Server is the HTTP handler set.
 type Server struct {
 	log *slog.Logger
@@ -49,7 +51,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if v := recover(); v != nil {
 			s.log.Error("panic in handler", "path", r.URL.Path, "panic", v)
-			writeError(w, http.StatusInternalServerError, "internal error")
+			writeError(w, http.StatusInternalServerError, errInternal)
 		}
 	}()
 	s.mux.ServeHTTP(w, r)

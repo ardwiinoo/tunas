@@ -269,14 +269,19 @@ var (
 	longDays   = map[string]string{"MON": "Senin", "TUE": "Selasa", "WED": "Rabu", "THU": "Kamis", "FRI": "Jumat", "SAT": "Sabtu", "SUN": "Minggu"}
 )
 
-// FormatTime renders t like "Sen 23 Nov 17:00 WIB" (year added if not the current year).
-func FormatTime(t, now time.Time, loc *time.Location) string {
+// FormatDate renders t like "Sen 23 Nov" (year added if not the current year).
+func FormatDate(t, now time.Time, loc *time.Location) string {
 	t = t.In(loc)
 	s := fmt.Sprintf("%s %d %s", dayNames[t.Weekday()], t.Day(), monthNames[t.Month()])
 	if t.Year() != now.In(loc).Year() {
 		s += fmt.Sprintf(" %d", t.Year())
 	}
-	return s + " " + t.Format("15:04 MST")
+	return s
+}
+
+// FormatTime renders t like "Sen 23 Nov 17:00 WIB" (year added if not the current year).
+func FormatTime(t, now time.Time, loc *time.Location) string {
+	return FormatDate(t, now, loc) + " " + t.In(loc).Format("15:04 MST")
 }
 
 // DescribeRecurrence renders a recurrence for users ("" for one-off).

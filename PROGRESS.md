@@ -35,9 +35,31 @@ Menunggu pemilik:
 Gerbang fase:
 - tes unit + integrasi Postgres 17 (lokal): lulus
 - tidak ada rahasia di log: lulus (smoke test container dengan token palsu: 0 kemunculan token/password)
-- CI GitHub: -
+- CI GitHub: hijau (CI, Deploy, Release agent) pada 2e38f3b
 
 Angka ukur: container lokal (Postgres + bot tanpa token valid) RSS 8,0 MiB, CPU 0,01%; shutdown bersih 1 detik.
 
 Menunggu pemilik:
 - Smoke test produksi (`docs/DEPLOY.md` bagian 9) setelah langkah deploy 2 sampai 6 selesai.
+
+## Fase 2: Agen laptop (pelacak, sinkron, /today) [x] (kode selesai; smoke test produksi menunggu deploy)
+- [x] Tracker Windows (`GetForegroundWindow` → PID → `QueryFullProcessImageName`, `GetLastInputInfo`) di balik antarmuka `Sampler` + palsu untuk tes; stub non-Windows
+- [x] Buffer SQLite (modernc), flush 60 detik, backoff eksponensial s.d. 15 menit, idempoten (total penuh per bucket, upsert ganti)
+- [x] Endpoint `POST /v1/agent/activity`, `GET /v1/agent/events` (long-poll ≤ 25 dtk), `POST /v1/agent/events/ack`, `GET /v1/agent/state`; auth token perangkat, body ≤ 1 MB, validasi batch
+- [x] Event `reminder.due`, `task.created`, `task.done` dibuat server dan dikonsumsi agen
+- [x] Paket `forms` + tes tabel (prioritas, cooldown tegur, gerakan idle 3 sampai 7 menit); agen mencatat transisi form ke log
+- [x] `/today`: total aktif, 5 aplikasi teratas, sesi terpanjang (jeda ≤ 2 menit), per kategori
+- [x] Rilis `tunas-agent.exe` lewat CI (artefak; release bila tag `agent-v*`)
+- [x] Panduan Task Scheduler + skrip ukur `scripts/measure-agent.ps1` (DEPLOY.md bagian 10)
+
+Gerbang fase:
+- tes unit + integrasi: lulus (termasuk skenario offline 5 menit → online: 10 bucket, 600 detik, tanpa hilang/ganda)
+- build Windows: lulus (12 MB)
+- tidak ada judul jendela di kode/DB/log: lulus (tes `TestNoWindowTitleAPIs`; wire format tanpa field judul; server menolak field tak dikenal)
+- ukur agen: diukur di laptop pemilik terhadap server lokal (bukan produksi), 3 menit
+
+Angka ukur (agen, Windows, 12 core): working set rata-rata 13,5 MB (maks 13,6 MB), private bytes 47,7 MB, CPU rata-rata ≈ 0,00% (0,03% satu core). Catatan: peluncuran pertama exe yang baru di-build sempat 52 MB; setelah restart stabil 13,5 MB (lihat DECISIONS).
+Uji lokal end-to-end: agen nyata → server lokal → Postgres: bucket `Code.exe` tersinkron, event `reminder.due` diterima (age 12 dtk) dan form berganti `tidur → ingat → tidur`.
+
+Menunggu pemilik:
+- Deploy produksi, lalu smoke test DEPLOY.md bagian 10.6 dan pengukuran 10 menit di produksi.

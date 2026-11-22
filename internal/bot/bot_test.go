@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-telegram/bot/models"
 
+	"github.com/ardwiinoo/tunas/internal/store"
 	"github.com/ardwiinoo/tunas/internal/store/storetest"
 )
 
@@ -108,4 +109,17 @@ func TestCommandsFlow(t *testing.T) {
 	expect("/cancel "+rid, "tidak ada")
 	expect("/ping", "belum ada")
 	expect("/unknown", "tidak dikenal")
+	expect("/today", "Belum ada data")
+
+	d, _, _ := db.CreateDevice(ctx, "laptop")
+	m := time.Date(2026, 11, 23, 9, 0, 0, 0, loc)
+	_ = db.UpsertBuckets(ctx, d.ID, []store.Bucket{
+		{Start: m, App: "Code.exe", Category: "work", ActiveSeconds: 60},
+		{Start: m.Add(time.Minute), App: "Code.exe", Category: "work", ActiveSeconds: 60},
+		{Start: m.Add(-24 * time.Hour), App: "Old.exe", Category: "other", ActiveSeconds: 60},
+	})
+	got := expect("/today", "📊 Hari ini (Sen 23 Nov)")
+	if !strings.Contains(got, "1. Code.exe — 2 m") || strings.Contains(got, "Old.exe") {
+		t.Fatalf("/today = %q", got)
+	}
 }

@@ -33,6 +33,7 @@ type AgentForms struct {
 	IdleMotionMinMinutes   int `yaml:"idle_motion_min_minutes"`
 	IdleMotionMaxMinutes   int `yaml:"idle_motion_max_minutes"`
 	ReminderDisplaySeconds int `yaml:"reminder_display_seconds"`
+	TegurDisplaySeconds    int `yaml:"tegur_display_seconds"`
 }
 
 // AgentOverlay configures the on-screen character (Phase 4).
@@ -68,6 +69,7 @@ func DefaultAgent() *Agent {
 			IdleMotionMinMinutes:   3,
 			IdleMotionMaxMinutes:   7,
 			ReminderDisplaySeconds: 15,
+			TegurDisplaySeconds:    10,
 		},
 		Overlay: AgentOverlay{Enabled: true, Corner: "bottom-right", MarginX: 24, MarginY: 24},
 	}

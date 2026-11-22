@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/ardwiinoo/tunas/internal/activity"
 	"github.com/ardwiinoo/tunas/internal/reminders"
 	"github.com/ardwiinoo/tunas/internal/store"
 )
@@ -85,6 +86,8 @@ func (c *Commands) dispatch(ctx context.Context, cmd, args string) (string, erro
 		return c.cancelReminder(ctx, args)
 	case "ping":
 		return c.ping(ctx)
+	case "today":
+		return c.today(ctx)
 	}
 	if c.Extra != nil {
 		if reply, ok := c.Extra(ctx, cmd, args); ok {
@@ -221,4 +224,15 @@ func ago(d time.Duration) string {
 		return fmt.Sprintf("%d jam", int(d.Hours()))
 	}
 	return fmt.Sprintf("%d hari", int(d.Hours()/24))
+}
+
+func (c *Commands) today(ctx context.Context) (string, error) {
+	now := c.Now()
+	from, to := activity.DayRange(now, c.Loc)
+	bs, err := c.DB.BucketsBetween(ctx, from, to)
+	if err != nil {
+		return "", err
+	}
+	title := "📊 Hari ini (" + reminders.FormatDate(now, now, c.Loc) + ")"
+	return activity.FormatToday(activity.Summarize(bs), title, c.Loc), nil
 }
