@@ -1,0 +1,40 @@
+name: Release agent
+
+on:
+  push:
+    branches: [main]
+    tags: ["agent-v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Build tunas-agent.exe
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: |
+          go build -trimpath \
+            -ldflags "-s -w -H=windowsgui -X main.version=${GITHUB_REF_NAME}-${GITHUB_SHA::7}" \
+            -o dist/tunas-agent.exe ./cmd/agent
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tunas-agent-${{ github.sha }}
+          path: dist/tunas-agent.exe
+          retention-days: 30
+
+      - name: GitHub release (tags only)
+        if: startsWith(github.ref, 'refs/tags/agent-v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/tunas-agent.exe

@@ -1,0 +1,153 @@
+package config
+
+import (
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Agent is the laptop agent configuration (%APPDATA%\tunas\config.yaml).
+type Agent struct {
+	ServerURL             string              `yaml:"server_url"`
+	DeviceToken           string              `yaml:"device_token"`
+	SampleIntervalSeconds int                 `yaml:"sample_interval_seconds"`
+	FlushIntervalSeconds  int                 `yaml:"flush_interval_seconds"`
+	IdleThresholdSeconds  int                 `yaml:"idle_threshold_seconds"`
+	StoreTitles           bool                `yaml:"store_titles"`
+	AppCategories         map[string][]string `yaml:"app_categories"`
+	Forms                 AgentForms          `yaml:"forms"`
+	Overlay               AgentOverlay        `yaml:"overlay"`
+}
+
+// AgentForms holds form state-machine thresholds.
+type AgentForms struct {
+	TegurAfterMinutes      int `yaml:"tegur_after_minutes"`
+	TegurCooldownMinutes   int `yaml:"tegur_cooldown_minutes"`
+	TidurAfterIdleMinutes  int `yaml:"tidur_after_idle_minutes"`
+	SenangSeconds          int `yaml:"senang_seconds"`
+	TaskDoneWindowSeconds  int `yaml:"task_done_window_seconds"`
+	IdleMotionMinMinutes   int `yaml:"idle_motion_min_minutes"`
+	IdleMotionMaxMinutes   int `yaml:"idle_motion_max_minutes"`
+	ReminderDisplaySeconds int `yaml:"reminder_display_seconds"`
+}
+
+// AgentOverlay configures the on-screen character (Phase 4).
+type AgentOverlay struct {
+	Enabled bool   `yaml:"enabled"`
+	Corner  string `yaml:"corner"` // bottom-right | bottom-left | top-right | top-left
+	Monitor int    `yaml:"monitor"`
+	MarginX int    `yaml:"margin_x"`
+	MarginY int    `yaml:"margin_y"`
+}
+
+// Valid categories for app_categories.
+var validCategories = map[string]bool{"work": true, "browse": true, "distract": true, "other": true}
+
+// DefaultAgent returns the default agent config.
+func DefaultAgent() *Agent {
+	return &Agent{
+		ServerURL:             "https://tunas.ardwiinoo.my.id",
+		SampleIntervalSeconds: 10,
+		FlushIntervalSeconds:  60,
+		IdleThresholdSeconds:  120,
+		AppCategories: map[string][]string{
+			"work":     {"Code.exe", "WindowsTerminal.exe", "idea64.exe", "GitHubDesktop.exe"},
+			"browse":   {"chrome.exe", "msedge.exe", "firefox.exe"},
+			"distract": {"Discord.exe", "Spotify.exe"},
+		},
+		Forms: AgentForms{
+			TegurAfterMinutes:      30,
+			TegurCooldownMinutes:   45,
+			TidurAfterIdleMinutes:  10,
+			SenangSeconds:          5,
+			TaskDoneWindowSeconds:  10,
+			IdleMotionMinMinutes:   3,
+			IdleMotionMaxMinutes:   7,
+			ReminderDisplaySeconds: 15,
+		},
+		Overlay: AgentOverlay{Enabled: true, Corner: "bottom-right", MarginX: 24, MarginY: 24},
+	}
+}
+
+// LoadAgentFile reads and validates an agent YAML file. Missing fields keep defaults.
+func LoadAgentFile(path string) (*Agent, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAgent(b)
+}
+
+// ParseAgent parses agent YAML on top of defaults and validates it.
+func ParseAgent(b []byte) (*Agent, error) {
+	c := DefaultAgent()
+	defCats := c.AppCategories
+	c.AppCategories = nil // user mapping replaces (not merges) the default
+	if err := yaml.Unmarshal(b, c); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	if len(c.AppCategories) == 0 {
+		c.AppCategories = defCats
+	}
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// Validate checks value ranges. Errors never include the device token.
+func (c *Agent) Validate() error {
+	var errs []error
+	u, err := url.Parse(c.ServerURL)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		errs = append(errs, errors.New("server_url must be an http(s) URL"))
+	}
+	if c.StoreTitles {
+		errs = append(errs, errors.New("store_titles must be false: window titles are never collected"))
+	}
+	pos := func(name string, v int) {
+		if v <= 0 {
+			errs = append(errs, fmt.Errorf("%s must be > 0", name))
+		}
+	}
+	pos("sample_interval_seconds", c.SampleIntervalSeconds)
+	pos("flush_interval_seconds", c.FlushIntervalSeconds)
+	pos("idle_threshold_seconds", c.IdleThresholdSeconds)
+	pos("forms.tegur_after_minutes", c.Forms.TegurAfterMinutes)
+	pos("forms.tidur_after_idle_minutes", c.Forms.TidurAfterIdleMinutes)
+	pos("forms.senang_seconds", c.Forms.SenangSeconds)
+	pos("forms.idle_motion_min_minutes", c.Forms.IdleMotionMinMinutes)
+	if c.Forms.TegurCooldownMinutes < 0 {
+		errs = append(errs, errors.New("forms.tegur_cooldown_minutes must be >= 0"))
+	}
+	if c.Forms.IdleMotionMaxMinutes < c.Forms.IdleMotionMinMinutes {
+		errs = append(errs, errors.New("forms.idle_motion_max_minutes must be >= idle_motion_min_minutes"))
+	}
+	for cat := range c.AppCategories {
+		if !validCategories[cat] {
+			errs = append(errs, fmt.Errorf("app_categories: unknown category %q", cat))
+		}
+	}
+	switch c.Overlay.Corner {
+	case "bottom-right", "bottom-left", "top-right", "top-left":
+	default:
+		errs = append(errs, fmt.Errorf("overlay.corner %q invalid", c.Overlay.Corner))
+	}
+	return errors.Join(errs...)
+}
+
+// CategoryOf maps an executable name to its category (case-insensitive), "other" if unmapped.
+func (c *Agent) CategoryOf(exe string) string {
+	for cat, apps := range c.AppCategories {
+		for _, a := range apps {
+			if strings.EqualFold(a, exe) {
+				return cat
+			}
+		}
+	}
+	return "other"
+}

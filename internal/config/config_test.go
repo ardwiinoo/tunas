@@ -1,0 +1,102 @@
+package config
+
+import (
+	"strings"
+	"testing"
+)
+
+func envMap(m map[string]string) func(string) string {
+	return func(k string) string { return m[k] }
+}
+
+func validEnv() map[string]string {
+	return map[string]string{
+		"TELEGRAM_BOT_TOKEN": "123:secret-token-value",
+		"TELEGRAM_OWNER_ID":  "42",
+		"DATABASE_URL":       "postgresql://u:supersecretpw@localhost/tunas",
+		"PUBLIC_BASE_URL":    "https://example.test",
+	}
+}
+
+func TestLoadServerDefaults(t *testing.T) {
+	c, err := LoadServer(envMap(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.HTTPAddr != ":8080" || c.Location.String() != "Asia/Jakarta" || c.LLMDailyRequestCap != 30 {
+		t.Fatalf("unexpected defaults: %+v", c)
+	}
+	if c.TelegramOwnerID != 42 {
+		t.Fatalf("owner id = %d", c.TelegramOwnerID)
+	}
+	if c.LLMEnabled() {
+		t.Fatal("LLM should be disabled without key/model")
+	}
+}
+
+func TestLoadServerMissingRequiredDoesNotLeakValues(t *testing.T) {
+	env := validEnv()
+	delete(env, "TELEGRAM_BOT_TOKEN")
+	env["TELEGRAM_OWNER_ID"] = "abc"
+	_, err := LoadServer(envMap(env))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	for _, want := range []string{"TELEGRAM_BOT_TOKEN is required", "TELEGRAM_OWNER_ID must be"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q missing %q", msg, want)
+		}
+	}
+	if strings.Contains(msg, "supersecretpw") || strings.Contains(msg, "abc") {
+		t.Errorf("error leaks values: %q", msg)
+	}
+}
+
+func TestLoadServerFallbackModels(t *testing.T) {
+	env := validEnv()
+	env["LLM_FALLBACK_MODELS"] = " a/b , ,c/d"
+	env["BIFROST_API_KEY"] = "k"
+	env["LLM_PRIMARY_MODEL"] = "x/y"
+	c, err := LoadServer(envMap(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.LLMFallbackModels) != 2 || c.LLMFallbackModels[1] != "c/d" || !c.LLMEnabled() {
+		t.Fatalf("got %v", c.LLMFallbackModels)
+	}
+}
+
+func TestParseAgent(t *testing.T) {
+	c, err := ParseAgent([]byte(`
+server_url: https://tunas.example
+device_token: abc
+app_categories:
+  work: [Code.exe]
+forms:
+  tegur_after_minutes: 20
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.SampleIntervalSeconds != 10 || c.Forms.TegurAfterMinutes != 20 || c.Forms.TegurCooldownMinutes != 45 {
+		t.Fatalf("defaults not merged: %+v", c)
+	}
+	if c.CategoryOf("code.EXE") != "work" || c.CategoryOf("chrome.exe") != "other" {
+		t.Fatal("user categories should replace defaults")
+	}
+}
+
+func TestParseAgentRejects(t *testing.T) {
+	cases := map[string]string{
+		"titles":   "store_titles: true",
+		"badcat":   "app_categories: {games: [x.exe]}",
+		"badurl":   "server_url: ftp://x",
+		"interval": "sample_interval_seconds: 0",
+	}
+	for name, y := range cases {
+		if _, err := ParseAgent([]byte(y)); err == nil {
+			t.Errorf("%s: expected error", name)
+		}
+	}
+}

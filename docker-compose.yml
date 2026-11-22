@@ -1,0 +1,24 @@
+# Put this file on the VPS at /srv/tunas/docker-compose.yml.
+# /srv/tunas/.env (chmod 600) holds APP_NAME, APP_PORT, IMAGE and the app
+# secrets (see .env.example).
+services:
+  tunas:
+    image: ${IMAGE}:${IMAGE_TAG:-latest}
+    container_name: ${APP_NAME}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      GOMEMLIMIT: 100MiB
+    ports:
+      - "127.0.0.1:${APP_PORT}:8080"
+    networks: [appnet]
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD", "/tunas-server", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  appnet:
+    external: true
