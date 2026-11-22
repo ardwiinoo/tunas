@@ -41,7 +41,11 @@ const helpText = `Halo, aku Tunas 🌱
 /reminders — pengingat tertunda
 /cancel <id> — batalkan pengingat
 /today — ringkasan aktivitas hari ini
-/ping — cek hidup`
+/tanya <pertanyaan> — tanya data aktivitas
+/form <id>|auto — atur form (biasa, fokus, tidur, senang, ingat, tegur)
+/ping — cek hidup
+
+Bisa juga kirim kalimat biasa, mis. "ingatkan aku jam 5 sore kirim laporan".`
 
 // SplitCommand parses "/cmd@Bot args" into ("cmd", "args"). ok=false if not a command.
 func SplitCommand(text string) (cmd, args string, ok bool) {

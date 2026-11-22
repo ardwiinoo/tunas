@@ -22,10 +22,23 @@ type Telegram struct {
 	log     *slog.Logger
 	cmds    *Commands
 	bot     *tg.Bot
-	// OnCallback handles inline-button callbacks (Phase 3). Optional.
-	OnCallback func(ctx context.Context, b *tg.Bot, q *models.CallbackQuery)
-	// OnText handles non-command text (Phase 3). Optional; returns reply.
-	OnText func(ctx context.Context, text string) string
+	// OnCallback handles inline-button data; the returned text replaces the
+	// message that carried the buttons. Optional.
+	OnCallback func(ctx context.Context, data string) string
+	// OnText handles non-command text. Optional.
+	OnText func(ctx context.Context, text string) Reply
+}
+
+// Button is an inline keyboard button.
+type Button struct {
+	Text string
+	Data string // callback data (≤ 64 bytes)
+}
+
+// Reply is a message with optional inline buttons (one row).
+type Reply struct {
+	Text    string
+	Buttons []Button
 }
 
 // NewTelegram creates the bot client. It does not contact Telegram yet.
@@ -95,43 +108,69 @@ func (t *Telegram) handle(ctx context.Context, b *tg.Bot, u *models.Update) {
 		t.log.Debug("ignored update from non-owner", "update_id", u.ID)
 		return
 	}
-	if u.CallbackQuery != nil {
-		if t.OnCallback != nil {
-			t.OnCallback(ctx, b, u.CallbackQuery)
-		}
+	if q := u.CallbackQuery; q != nil {
+		t.handleCallback(ctx, b, q)
 		return
 	}
 	text := u.Message.Text
 	if text == "" {
 		return
 	}
-	var reply string
+	var reply Reply
 	if _, _, isCmd := SplitCommand(text); !isCmd && t.OnText != nil {
 		reply = t.OnText(ctx, text)
 	} else {
-		reply = t.cmds.Handle(ctx, text)
+		reply = Reply{Text: t.cmds.Handle(ctx, text)}
 	}
-	if reply == "" {
+	if reply.Text == "" {
 		return
 	}
-	if err := t.Send(ctx, u.Message.Chat.ID, reply); err != nil {
+	if err := t.SendReply(ctx, u.Message.Chat.ID, reply); err != nil {
 		t.log.Warn("reply failed", "err", err)
 	}
 }
 
-// Send sends a plain-text message.
-func (t *Telegram) Send(ctx context.Context, chatID int64, text string) error {
-	_, err := t.bot.SendMessage(ctx, &tg.SendMessageParams{ChatID: chatID, Text: text})
-	if err != nil {
+func (t *Telegram) handleCallback(ctx context.Context, b *tg.Bot, q *models.CallbackQuery) {
+	if _, err := b.AnswerCallbackQuery(ctx, &tg.AnswerCallbackQueryParams{CallbackQueryID: q.ID}); err != nil {
+		t.log.Warn("answerCallbackQuery failed", "err", t.Redact(err))
+	}
+	if t.OnCallback == nil || q.Message.Message == nil {
+		return
+	}
+	text := t.OnCallback(ctx, q.Data)
+	if text == "" {
+		return
+	}
+	msg := q.Message.Message
+	if _, err := b.EditMessageText(ctx, &tg.EditMessageTextParams{
+		ChatID: msg.Chat.ID, MessageID: msg.ID, Text: text,
+	}); err != nil {
+		t.log.Warn("editMessageText failed", "err", t.Redact(err))
+	}
+}
+
+// SendReply sends a message with optional inline buttons.
+func (t *Telegram) SendReply(ctx context.Context, chatID int64, r Reply) error {
+	p := &tg.SendMessageParams{ChatID: chatID, Text: r.Text}
+	if len(r.Buttons) > 0 {
+		row := make([]models.InlineKeyboardButton, 0, len(r.Buttons))
+		for _, btn := range r.Buttons {
+			row = append(row, models.InlineKeyboardButton{Text: btn.Text, CallbackData: btn.Data})
+		}
+		p.ReplyMarkup = &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{row}}
+	}
+	if _, err := t.bot.SendMessage(ctx, p); err != nil {
 		return errors.New(t.Redact(err))
 	}
 	return nil
+}
+
+// Send sends a plain-text message.
+func (t *Telegram) Send(ctx context.Context, chatID int64, text string) error {
+	return t.SendReply(ctx, chatID, Reply{Text: text})
 }
 
 // NotifyOwner sends a message to the owner's private chat.
 func (t *Telegram) NotifyOwner(ctx context.Context, text string) error {
 	return t.Send(ctx, t.ownerID, text)
 }
-
-// Bot exposes the underlying client (for inline keyboards in later phases).
-func (t *Telegram) Bot() *tg.Bot { return t.bot }

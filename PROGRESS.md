@@ -63,4 +63,19 @@ Uji lokal end-to-end: agen nyata → server lokal → Postgres: bucket `Code.exe
 
 Menunggu pemilik:
 - Deploy produksi, lalu smoke test DEPLOY.md bagian 10.6 dan pengukuran 10 menit di produksi.
-- **BLOKIR:** repo menjadi privat; status CI branch `phase-2-agent` tidak bisa dibaca agent (tanpa `gh`/token). Merge ke `main` menunggu konfirmasi CI hijau dari pemilik, atau `gh auth login` di mesin ini.
+
+## Fase 3: Kecerdasan (LLM) dan form [x] (kode selesai; menunggu virtual key Bifrost untuk uji nyata)
+- [x] Klien `internal/llm` ke Bifrost: timeout 45 dtk, `fallbacks`, retry sekali bila `content` kosong + `finish_reason=length` (max_tokens ×2), log `routing_info`, tanpa loop retry 429; `llm_usage` + batas `LLM_DAILY_REQUEST_CAP` (lewat → balasan templat)
+- [x] Pesan biasa → klasifikasi maksud (JSON divalidasi ketat); pengingat/tugas dikonfirmasi tombol Ya/Batal; waktu dihitung & divalidasi kode
+- [x] Ringkasan harian 21:00 WIB (bisa diubah di `settings`), persona form aktif, dilewati bila tanpa data, fallback templat
+- [x] `/tanya` dengan templat query tetap (`top_apps`, `longest_session`, `total_active`, `by_category` × 5 rentang); tanpa text-to-SQL
+- [x] `modes/*.yaml` (embed) untuk 6 form; `/form <id>` dan `/form auto` (setting + event `form.set` ke agen)
+- [ ] Virtual key Bifrost khusus Tunas **[PEMILIK]**
+
+Gerbang fase:
+- tes dengan klien LLM palsu: lulus
+- tidak ada data mentah/judul ke LLM: lulus (`TestAskUsesTemplateAndOnlyAggregates` memeriksa seluruh payload: tanpa timestamp mentah, tanpa field bucket)
+- batas harian teruji: lulus (unit `TestCapped` + integrasi Postgres `TestDailyCapWithDB`)
+
+Menunggu pemilik:
+- Virtual key Bifrost + env LLM (DEPLOY.md bagian 11), lalu smoke test penerimaan Fase 3.

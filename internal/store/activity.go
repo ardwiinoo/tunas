@@ -83,3 +83,13 @@ func (db *DB) DeleteSetting(ctx context.Context, key string) error {
 	_, err := db.Pool.Exec(ctx, `delete from settings where key=$1`, key)
 	return err
 }
+
+// IncrementLLMUsage bumps the request counter for the local day of t and returns the new count.
+func (db *DB) IncrementLLMUsage(ctx context.Context, t time.Time) (int, error) {
+	var n int
+	err := db.Pool.QueryRow(ctx,
+		`insert into llm_usage(day, requests) values($1::date, 1)
+		 on conflict (day) do update set requests = llm_usage.requests + 1 returning requests`,
+		t.Format("2006-01-02")).Scan(&n)
+	return n, err
+}

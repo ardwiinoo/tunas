@@ -24,10 +24,13 @@ import (
 	"time"
 
 	"github.com/ardwiinoo/tunas/internal/api"
+	"github.com/ardwiinoo/tunas/internal/assist"
 	"github.com/ardwiinoo/tunas/internal/bot"
 	"github.com/ardwiinoo/tunas/internal/config"
+	"github.com/ardwiinoo/tunas/internal/llm"
 	"github.com/ardwiinoo/tunas/internal/reminders"
 	"github.com/ardwiinoo/tunas/internal/store"
+	"github.com/ardwiinoo/tunas/modes"
 )
 
 func main() {
@@ -79,11 +82,41 @@ func serve() error {
 	}
 	log.Info("migrations applied", "new", applied)
 
+	ms, err := modes.Load()
+	if err != nil {
+		return err
+	}
+	var completer llm.Completer = llm.Disabled{}
+	if cfg.LLMEnabled() {
+		completer = &llm.Capped{
+			Inner: llm.New(cfg.BifrostBaseURL, cfg.BifrostAPIKey, cfg.LLMPrimaryModel, cfg.LLMFallbackModels, log),
+			Usage: db, Cap: cfg.LLMDailyRequestCap, Now: time.Now, Loc: cfg.Location,
+		}
+	}
+	log.Info("llm", "enabled", cfg.LLMEnabled(), "primary", cfg.LLMPrimaryModel, "fallbacks", len(cfg.LLMFallbackModels))
+	asst := assist.New(db, completer, ms, cfg.Location, time.Now, log)
+
 	cmds := &bot.Commands{DB: db, Loc: cfg.Location, Now: time.Now, Log: log}
+	cmds.Extra = func(ctx context.Context, cmd, args string) (string, bool) {
+		switch cmd {
+		case "tanya":
+			return asst.Ask(ctx, args), true
+		case "form":
+			reply, err := asst.SetForm(ctx, args)
+			if err != nil {
+				log.Error("set form failed", "err", err)
+				return "Maaf, gagal mengatur form.", true
+			}
+			return reply, true
+		}
+		return "", false
+	}
 	tgBot, err := bot.NewTelegram(cfg.TelegramBotToken, cfg.TelegramOwnerID, cmds, log)
 	if err != nil {
 		return err
 	}
+	tgBot.OnText = asst.HandleText
+	tgBot.OnCallback = asst.HandleCallback
 	sched := reminders.NewScheduler(db, tgBot, time.Now, cfg.Location, log)
 
 	httpSrv := &http.Server{
@@ -103,6 +136,7 @@ func serve() error {
 	})
 	wg.Go(func() { sched.Run(ctx) })
 	wg.Go(func() { _ = tgBot.Run(ctx) })
+	wg.Go(func() { asst.RunDaily(ctx, tgBot) })
 
 	select {
 	case <-ctx.Done():
