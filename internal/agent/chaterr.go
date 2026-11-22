@@ -12,14 +12,17 @@ type ChatFail string
 
 // Chat failure kinds. The llm_* reasons come from the server's chat endpoint.
 const (
-	FailTimeout  ChatFail = "timeout"  // server or LLM too slow
-	FailOffline  ChatFail = "offline"  // cannot reach the server at all
-	FailCap      ChatFail = "llm_cap"  // daily LLM quota used up
-	FailLLM      ChatFail = "llm"      // every model failed
-	FailDisabled ChatFail = "disabled" // LLM not configured on the server
-	FailAuth     ChatFail = "auth"     // device token rejected
-	FailBusy     ChatFail = "busy"     // rate limited
-	FailServer   ChatFail = "server"   // any other server error
+	FailTimeout  ChatFail = "timeout"     // server or LLM too slow
+	FailOffline  ChatFail = "offline"     // cannot reach the server at all
+	FailCap      ChatFail = "llm_cap"     // daily LLM quota used up
+	FailLLM      ChatFail = "llm"         // every model failed (other reasons)
+	FailBlocked  ChatFail = "llm_blocked" // gateway refused the models: configuration
+	FailQuota    ChatFail = "llm_quota"   // provider quota / rate limit
+	FailDown     ChatFail = "llm_down"    // provider down
+	FailDisabled ChatFail = "disabled"    // LLM not configured on the server
+	FailAuth     ChatFail = "auth"        // device token rejected
+	FailBusy     ChatFail = "busy"        // rate limited
+	FailServer   ChatFail = "server"      // any other server error
 )
 
 // ClassifyChatError maps a Client.Chat error to a ChatFail.
@@ -35,6 +38,12 @@ func ClassifyChatError(err error) ChatFail {
 			return FailDisabled
 		case "llm_failed":
 			return FailLLM
+		case "llm_blocked":
+			return FailBlocked
+		case "llm_quota":
+			return FailQuota
+		case "llm_down":
+			return FailDown
 		}
 		switch se.Code {
 		case http.StatusUnauthorized, http.StatusForbidden:

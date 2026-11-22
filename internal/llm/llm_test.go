@@ -1,12 +1,15 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -100,18 +103,86 @@ func TestCompleteTotalBudget(t *testing.T) {
 	}
 }
 
-func TestCompleteAuthErrorStops(t *testing.T) {
-	g := &gateway{respond: func(int, chatRequest) (int, string) { return 401, `{}` }}
+// The reported bug: a 403 on the primary must not stop the fallbacks.
+func TestCompleteFallsBackAfter403And429(t *testing.T) {
+	g := &gateway{respond: func(_ int, req chatRequest) (int, string) {
+		switch req.Model {
+		case "p/primary":
+			return 403, `{"error":"model not allowed for this key"}`
+		case "f/one":
+			return 429, `{"error":"quota"}`
+		}
+		return 200, ok("dari fallback kedua", "stop")
+	}}
 	c := newClient(t, g)
-	if _, err := c.Complete(context.Background(), nil); Kind(err) != KindFailed || len(g.requests) != 1 {
-		t.Fatalf("err %v after %d requests", err, len(g.requests))
+	var blocked []string
+	c.OnBlocked = func(model string, status int) { blocked = append(blocked, fmt.Sprint(model, " ", status)) }
+	var logBuf bytes.Buffer
+	c.Log = slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	got, err := c.Complete(context.Background(), nil)
+	if err != nil || got != "dari fallback kedua" || len(g.requests) != 3 {
+		t.Fatalf("got %q %v after %d requests", got, err, len(g.requests))
+	}
+	if len(blocked) != 1 || blocked[0] != "p/primary 403" {
+		t.Fatalf("owner must hear about the blocked primary even though a fallback answered: %v", blocked)
+	}
+	log := logBuf.String()
+	for _, want := range []string{
+		"model=p/primary attempt=1 status=403 kind=llm_blocked",
+		"model=f/one attempt=2 status=429 kind=llm_quota",
+		"model=f/two attempt=3 status=ok",
+	} {
+		if !strings.Contains(log, want) {
+			t.Errorf("log lacks %q:\n%s", want, log)
+		}
+	}
+}
+
+func TestAllFailedKind(t *testing.T) {
+	cases := []struct {
+		codes []int
+		want  string
+	}{
+		{[]int{403, 403, 403}, KindBlocked}, // only configuration: owner must fix it
+		{[]int{401, 404, 403}, KindBlocked},
+		{[]int{403, 429, 429}, KindQuota}, // the models allowed to run hit quota
+		{[]int{429, 502, 429}, KindDown},
+		{[]int{500, 503, 403}, KindDown},
+		{[]int{400, 400, 400}, KindFailed},
+	}
+	for _, tc := range cases {
+		g := &gateway{respond: func(n int, _ chatRequest) (int, string) { return tc.codes[n-1], `{}` }}
+		c := newClient(t, g)
+		_, err := c.Complete(context.Background(), nil)
+		var fe *FailedError
+		if !errors.As(err, &fe) || len(fe.Attempts) != 3 || len(g.requests) != 3 {
+			t.Fatalf("%v: err %v after %d requests", tc.codes, err, len(g.requests))
+		}
+		if Kind(err) != tc.want {
+			t.Errorf("%v: kind %s, want %s", tc.codes, Kind(err), tc.want)
+		}
+		var se *StatusError
+		if !errors.As(err, &se) {
+			t.Errorf("%v: attempt errors must stay reachable with errors.As", tc.codes)
+		}
+	}
+}
+
+func TestCallerCancelStops(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	g := &gateway{respond: func(int, chatRequest) (int, string) { cancel(); return 500, `{}` }}
+	c := newClient(t, g)
+	if _, err := c.Complete(ctx, nil); !errors.Is(err, context.Canceled) || len(g.requests) != 1 {
+		t.Fatalf("err %v after %d requests (shutdown must not walk the fallbacks)", err, len(g.requests))
 	}
 }
 
 func TestKind(t *testing.T) {
 	for err, want := range map[error]string{
 		ErrCap: KindCap, ErrDisabled: KindDisabled, ErrTimeout: KindTimeout,
-		context.DeadlineExceeded: KindTimeout, ErrEmpty: KindFailed, &StatusError{Code: 500}: KindFailed,
+		context.DeadlineExceeded: KindTimeout, ErrEmpty: KindDown, &StatusError{Code: 500}: KindDown,
+		&StatusError{Code: 403}: KindBlocked, &StatusError{Code: 429}: KindQuota, &StatusError{Code: 400}: KindFailed,
 	} {
 		if got := Kind(err); got != want {
 			t.Errorf("Kind(%v) = %s, want %s", err, got, want)

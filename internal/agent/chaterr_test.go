@@ -27,6 +27,9 @@ func TestClassifyChatError(t *testing.T) {
 		case "llm":
 			w.WriteHeader(503)
 			_, _ = w.Write([]byte(`{"error":"llm_failed"}`))
+		case "blocked", "quota", "down":
+			w.WriteHeader(503)
+			_, _ = w.Write([]byte(`{"error":"llm_` + req["text"] + `"}`))
 		case "auth":
 			w.WriteHeader(401)
 		case "proxy":
@@ -39,6 +42,7 @@ func TestClassifyChatError(t *testing.T) {
 
 	for text, want := range map[string]ChatFail{
 		"cap": FailCap, "llmslow": FailTimeout, "llm": FailLLM, "auth": FailAuth, "proxy": FailOffline,
+		"blocked": FailBlocked, "quota": FailQuota, "down": FailDown,
 	} {
 		_, err := c.Chat(context.Background(), text, "")
 		if got := ClassifyChatError(err); got != want {
