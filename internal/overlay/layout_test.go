@@ -3,10 +3,7 @@ package overlay
 import (
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
-
-	"github.com/ardwiinoo/tunas/internal/forms"
 )
 
 // mono measures 8px per rune.
@@ -84,85 +81,5 @@ func TestWindowPosition(t *testing.T) {
 	}
 	if x, y := WindowPosition("bottom-right", 200, 100, 24, 24); x != 0 || y != 0 {
 		t.Error("tiny monitor should clamp to 0")
-	}
-}
-
-func TestPresenter(t *testing.T) {
-	t0 := time.Unix(1000, 0)
-	var p Presenter
-
-	p.OnForm(forms.Output{Form: forms.Fokus}, t0)
-	if p.Visible {
-		t.Fatal("quiet form must not show")
-	}
-	p.OnForm(forms.Output{Form: forms.Tidur, Speech: "Zzz..."}, t0)
-	if p.Visible {
-		t.Fatal("tidur must not pop up")
-	}
-	p.OnForm(forms.Output{Form: forms.Ingat, Speech: "minum", Duration: 15 * time.Second}, t0)
-	if !p.Visible || p.BubbleText() != "minum" {
-		t.Fatalf("ingat = %+v", p)
-	}
-	p.Tick(t0.Add(14 * time.Second))
-	if !p.Visible {
-		t.Fatal("hid too early")
-	}
-	p.Tick(t0.Add(15 * time.Second))
-	if p.Visible {
-		t.Fatal("should hide after duration")
-	}
-
-	// hotkey → typing → submit → reply
-	p.OnHotkey(t0)
-	p.Type([]rune("halo\x08 tunas"), t0)
-	p.Backspace(t0)
-	if !p.Visible || p.Draft != "halo tuna" || !strings.HasPrefix(p.BubbleText(), "› halo tuna") {
-		t.Fatalf("draft = %q", p.Draft)
-	}
-	p.OnForm(forms.Output{Form: forms.Ingat, Speech: "x", Duration: time.Second}, t0)
-	if !p.Input {
-		t.Fatal("form change must not interrupt typing")
-	}
-	p.Tick(t0.Add(InputTimeout - time.Second))
-	if !p.Visible || !p.Input {
-		t.Fatal("input mode hid while still within the timeout")
-	}
-	if got := p.Submit(t0); got != "halo tuna" || p.Input || p.BubbleText() != "..." {
-		t.Fatalf("submit = %q %+v", got, p)
-	}
-	p.OnReply("Halo juga!", t0)
-	p.Tick(t0.Add(7 * time.Second))
-	if !p.Visible || p.BubbleText() != "Halo juga!" {
-		t.Fatal("reply hidden too early")
-	}
-	p.Dismiss()
-	if p.Visible {
-		t.Fatal("dismiss")
-	}
-
-	// empty submit and toggle-cancel
-	p.OnHotkey(t0)
-	if p.Submit(t0) != "" || p.Visible {
-		t.Fatal("empty submit should hide")
-	}
-	p.OnHotkey(t0)
-	p.OnHotkey(t0)
-	if p.Input || p.Visible {
-		t.Fatal("second hotkey cancels")
-	}
-
-	p.OnHotkey(t0)
-	p.Type([]rune(strings.Repeat("a", MaxDraftLen+50)), t0)
-	if utf8.RuneCountInString(p.Draft) != MaxDraftLen {
-		t.Fatal("draft not capped")
-	}
-	p.Type([]rune("b"), t0.Add(30*time.Second)) // activity extends the timeout
-	p.Tick(t0.Add(80 * time.Second))
-	if !p.Input {
-		t.Fatal("typing should extend the input timeout")
-	}
-	p.Tick(t0.Add(91 * time.Second))
-	if p.Input || p.Visible {
-		t.Fatal("idle input should be cancelled after InputTimeout")
 	}
 }

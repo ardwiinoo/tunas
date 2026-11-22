@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -24,12 +25,31 @@ import (
 var version = "dev"
 
 func main() {
-	debug := flag.Bool("debug", false, "log to console at debug level")
+	debug := flag.Bool("debug", false, "open a console window and log to it at debug level")
 	cfgPath := flag.String("config", defaultConfigPath(), "path to config.yaml")
 	flag.Parse()
 
+	// The release build is a GUI-subsystem exe (no console), so --debug has
+	// to create one or its output would go nowhere.
+	ownConsole := false
+	if *debug {
+		var err error
+		if ownConsole, err = agent.OpenConsole("Tunas agent (debug)"); err != nil {
+			os.Exit(1) // nowhere to report it
+		}
+	}
+
 	if err := run(*cfgPath, *debug); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		if errors.Is(err, agent.ErrAlreadyRunning) {
+			fmt.Fprintln(os.Stderr, "Tunas agent sudah berjalan. Hentikan yang lama dulu (Task Manager → tunas-agent.exe).")
+		} else {
+			fmt.Fprintln(os.Stderr, "error:", err)
+		}
+		if ownConsole {
+			// the console closes with the process; keep the error readable
+			fmt.Fprintln(os.Stderr, "Tekan Enter untuk menutup...")
+			_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+		}
 		os.Exit(1)
 	}
 }
@@ -51,6 +71,14 @@ func defaultConfigPath() string {
 func dataDir() string { return appDir("LOCALAPPDATA", os.UserCacheDir) }
 
 func run(cfgPath string, debug bool) error {
+	// One agent per user session: two would double-count activity and draw
+	// two overlays (two bubbles on screen at once).
+	release, err := agent.SingleInstance("TunasAgent")
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	var out io.Writer = os.Stderr
 	level := slog.LevelDebug
 	if !debug {
