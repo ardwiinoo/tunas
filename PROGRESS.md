@@ -63,3 +63,4 @@ Uji lokal end-to-end: agen nyata → server lokal → Postgres: bucket `Code.exe
 
 Menunggu pemilik:
 - Deploy produksi, lalu smoke test DEPLOY.md bagian 10.6 dan pengukuran 10 menit di produksi.
+- **BLOKIR:** repo menjadi privat; status CI branch `phase-2-agent` tidak bisa dibaca agent (tanpa `gh`/token). Merge ke `main` menunggu konfirmasi CI hijau dari pemilik, atau `gh auth login` di mesin ini.
