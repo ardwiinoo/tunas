@@ -194,7 +194,7 @@ func TestHandleEventFreshness(t *testing.T) {
 	now := time.Date(2026, 11, 23, 3, 0, 0, 0, time.UTC)
 	a := &Agent{Cfg: testCfg(), Log: slog.New(slog.DiscardHandler), Now: func() time.Time { return now }}
 	payload, _ := json.Marshal(map[string]string{"text": "lama"})
-	a.HandleEvent(Event{ID: 1, Type: "reminder.due", Payload: payload, CreatedAt: now.Add(-time.Hour)})
+	a.HandleEvent(Event{ID: 1, Type: "reminder.due", Payload: payload, CreatedAt: now.Add(-7 * time.Hour)})
 	a.HandleEvent(Event{ID: 2, Type: "task.done", Payload: []byte(`{}`), CreatedAt: now.Add(-time.Minute)})
 	if !a.remindAt.IsZero() || !a.doneAt.IsZero() {
 		t.Fatal("stale events must not trigger forms")

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"runtime"
 	"sort"
+	"sync/atomic"
 	"time"
 	"unicode/utf16"
 	"unsafe"
@@ -145,8 +146,15 @@ type winMsg struct {
 // ChatFunc sends typed text to the server and returns Tunas's reply.
 type ChatFunc func(ctx context.Context, text string, f forms.Form) (string, error)
 
-// Overlay is the on-screen character window.
+// Overlay is the on-screen character window and the tray icon.
 type Overlay struct {
+	// Set before Run.
+	CharacterOff bool         // tray only: overlay disabled in config.yaml
+	OnPause      func(bool)   // tray "Jeda pelacakan" toggled
+	OnQuit       func()       // tray "Keluar"
+	LogPath      string       // tray "Buka log" ("" = disabled, e.g. --debug)
+	conn         atomic.Int32 // agent.ConnState, set from any goroutine
+
 	cfg      config.AgentOverlay
 	log      *slog.Logger
 	chat     ChatFunc
@@ -173,7 +181,16 @@ type Overlay struct {
 	dib       uintptr
 	bits      []byte
 	surrogate uint16
+
+	// tray (UI thread)
+	paused     bool
+	trayIcon   uintptr
+	trayShown  int
+	trayPaused bool
 }
+
+// SetConn updates the tray status colour (safe from any goroutine).
+func (o *Overlay) SetConn(s agent.ConnState) { o.conn.Store(int32(s)) }
 
 var theOverlay *Overlay // the window procedure needs a global
 
@@ -206,6 +223,9 @@ const (
 
 // Notify passes a new form output to the overlay (safe from any goroutine).
 func (o *Overlay) Notify(out forms.Output) {
+	if o.CharacterOff {
+		return
+	}
 	select {
 	case o.formCh <- out:
 	default:
@@ -238,7 +258,11 @@ func (o *Overlay) Run(ctx context.Context) error {
 	o.hwnd = hwnd
 	defer o.freeDIB()
 
-	if r, _, err := pRegisterHotKey.Call(hwnd, hotkeyID, modAlt|modNoRepeat, vkSpace); r == 0 {
+	o.trayInit()
+	defer o.trayRemove()
+	if o.CharacterOff {
+		o.log.Info("overlay disabled in config: tray icon only")
+	} else if r, _, err := pRegisterHotKey.Call(hwnd, hotkeyID, modAlt|modNoRepeat, vkSpace); r == 0 {
 		o.log.Warn("hotkey Alt+Space unavailable (used by another app?)", "err", err.Error())
 	} else {
 		defer pUnregisterHotKey.Call(hwnd, hotkeyID) //nolint:errcheck
@@ -290,11 +314,20 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 		if !o.p.Typing() {
 			return maNoActivate // clicking Tunas must not steal focus
 		}
+	case wmTray:
+		if m := lp & 0xFFFF; m == wmRButtonUp || m == wmLButtonUp {
+			o.trayMenu()
+		}
+		return 0
 	case wmClose:
 		pDestroyWindow.Call(hwnd) //nolint:errcheck
 		return 0
 	case wmDestroy:
 		pPostQuitMessage.Call(0) //nolint:errcheck
+		return 0
+	}
+	if taskbarCreated != 0 && msg == taskbarCreated {
+		o.trayUpdate(nimAdd) // Explorer restarted
 		return 0
 	}
 	r, _, _ := pDefWindowProcW.Call(hwnd, msg, wp, lp)
@@ -369,6 +402,7 @@ func (o *Overlay) tick(now time.Time) {
 			drained = true
 		}
 	}
+	o.trayTick()
 	o.p.Tick(now)
 	if o.p.Typing() && !wasTyping { // failed: the text box is back for a retry
 		pSetForegroundWindow.Call(o.hwnd) //nolint:errcheck

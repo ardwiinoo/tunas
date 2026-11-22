@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/ardwiinoo/tunas/internal/agent"
 	"github.com/ardwiinoo/tunas/internal/config"
 	"github.com/ardwiinoo/tunas/internal/forms"
 )
@@ -15,7 +16,15 @@ import (
 type ChatFunc func(ctx context.Context, text string, f forms.Form) (string, error)
 
 // Overlay is unavailable outside Windows.
-type Overlay struct{}
+type Overlay struct {
+	CharacterOff bool
+	OnPause      func(bool)
+	OnQuit       func()
+	LogPath      string
+}
+
+// SetConn does nothing.
+func (*Overlay) SetConn(agent.ConnState) {}
 
 // New returns an error: the overlay is Windows-only.
 func New(config.AgentOverlay, ChatFunc, *slog.Logger) (*Overlay, error) {

@@ -19,14 +19,14 @@ type API interface {
 	Events(ctx context.Context, after int64, wait time.Duration) ([]Event, error)
 	Ack(ctx context.Context, upTo int64) error
 	State(ctx context.Context) (State, error)
+	Heartbeat(ctx context.Context, version string, paused bool) (int, error)
 }
 
 const (
-	syncBatch      = 500
-	maxBackoff     = 15 * time.Minute
-	eventWait      = 25 * time.Second
-	reminderMaxAge = 2 * time.Minute
-	kvLastEventID  = "last_event_id"
+	syncBatch     = 500
+	maxBackoff    = 15 * time.Minute
+	eventWait     = 25 * time.Second
+	kvLastEventID = "last_event_id"
 )
 
 // Agent ties sampling, buffering, sync and the form machine together.
@@ -39,17 +39,26 @@ type Agent struct {
 	Now     func() time.Time
 	// OnForm is called when the computed form or speech changes (overlay hook).
 	OnForm func(out forms.Output)
+	// OnConn is called when the connection state changes (tray icon).
+	OnConn func(ConnState)
+	// Version is reported in the heartbeat.
+	Version string
+	// RetryBase is the first retry delay of the event loop (default 5s).
+	RetryBase time.Duration
 
 	machine *forms.Machine
 	streak  forms.Streak
 	last    forms.Output
 
-	mu       sync.Mutex // guards the fields below (set by event handling)
-	override forms.Form
-	skew     time.Duration // server time - local time
-	reminder string
-	remindAt time.Time
-	doneAt   time.Time
+	mu        sync.Mutex // guards the fields below (set by event handling)
+	override  forms.Form
+	skew      time.Duration // server time - local time
+	reminder  string
+	remindAt  time.Time
+	reminders []string // due reminders waiting for their turn
+	doneAt    time.Time
+	conn      ConnState
+	paused    bool
 }
 
 // FormsConfig converts YAML thresholds to forms.Config.
@@ -74,6 +83,9 @@ func (a *Agent) init() {
 	if a.machine == nil {
 		a.machine = forms.New(FormsConfig(a.Cfg.Forms), nil)
 	}
+	if a.RetryBase <= 0 {
+		a.RetryBase = 5 * time.Second
+	}
 }
 
 // Run blocks until ctx is cancelled.
@@ -82,6 +94,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 	wg.Go(func() { a.syncLoop(ctx) })
 	wg.Go(func() { a.eventLoop(ctx) })
+	wg.Go(func() { a.heartbeatLoop(ctx) })
 
 	interval := time.Duration(a.Cfg.SampleIntervalSeconds) * time.Second
 	t := time.NewTicker(interval)
@@ -117,7 +130,7 @@ func (a *Agent) SampleOnce(ctx context.Context, interval time.Duration) error {
 	}
 	idle := s.Idle >= time.Duration(a.Cfg.IdleThresholdSeconds)*time.Second
 	cat := "other"
-	if s.App != "" {
+	if s.App != "" && !a.Paused() {
 		cat = a.Cfg.CategoryOf(s.App)
 		secs := int(interval.Seconds())
 		act, idl := secs, 0
@@ -131,6 +144,7 @@ func (a *Agent) SampleOnce(ctx context.Context, interval time.Duration) error {
 	streak := a.streak.Add(cat, idle, interval)
 
 	a.mu.Lock()
+	a.nextReminder(now)
 	sig := forms.Signals{
 		Now: now, Category: cat, Idle: s.Idle, DistractStreak: streak, Override: a.override,
 		ReminderText: a.reminder, ReminderAt: a.remindAt, TaskDoneAt: a.doneAt,
@@ -218,66 +232,99 @@ func backoff(base time.Duration, failures int) time.Duration {
 	return min(d, maxBackoff)
 }
 
+// eventLoop connects (GET /state) and then long-polls events until an error,
+// after which it backs off and connects again. Connecting first means the
+// tray turns green as soon as the server answers, instead of after the first
+// long-poll returns (up to eventWait when nothing is pending), and the form
+// override and clock skew are refreshed after sleep.
 func (a *Agent) eventLoop(ctx context.Context) {
+	a.init()
 	after := a.loadLastEventID(ctx)
 	failures := 0
-	sleep := func() bool {
+	var downSince time.Time // first failure of the current outage
+	fail := func() bool {
+		if failures == 0 {
+			downSince = a.Now()
+		}
 		failures++
+		a.setConn(connAfter(failures))
 		select {
 		case <-ctx.Done():
 			return false
-		case <-time.After(backoff(5*time.Second, failures)):
+		case <-time.After(backoff(a.RetryBase, failures)):
 			return true
 		}
 	}
-	// initial state (override + clock skew)
-	for {
-		st, err := a.API.State(ctx)
-		if err == nil {
-			a.mu.Lock()
-			a.skew = st.Now.Sub(a.Now())
-			if st.FormOverride != nil {
-				a.override = forms.Form(*st.FormOverride)
-			}
-			a.mu.Unlock()
-			failures = 0
-			break
-		}
-		a.Log.Warn("get state failed", "err", err)
-		if !sleep() {
-			return
-		}
-	}
+	a.setConn(ConnConnecting)
 	for ctx.Err() == nil {
-		evs, err := a.API.Events(ctx, after, eventWait)
+		st, err := a.API.State(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			var se *StatusError
-			if errors.As(err, &se) && se.Code == 401 {
-				a.Log.Error("device token rejected by server (revoked or wrong)")
-			} else {
-				a.Log.Warn("events poll failed", "err", err)
-			}
-			if !sleep() {
+			a.logPollErr("get state failed", err, failures)
+			if !fail() {
 				return
 			}
 			continue
 		}
+		a.mu.Lock()
+		a.skew = st.Now.Sub(a.Now())
+		if st.FormOverride != nil {
+			a.override = forms.Form(*st.FormOverride)
+		} else {
+			a.override = ""
+		}
+		a.mu.Unlock()
+		var offlineFor time.Duration
+		if failures > 0 {
+			offlineFor = a.Now().Sub(downSince)
+		}
 		failures = 0
-		if len(evs) == 0 {
-			continue
+		a.setConn(ConnOnline)
+
+		for first := true; ctx.Err() == nil; first = false {
+			evs, err := a.API.Events(ctx, after, eventWait)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				a.logPollErr("events poll failed", err, failures)
+				if !fail() {
+					return
+				}
+				break // connect again
+			}
+			if first {
+				// whatever piled up on the server while away arrives here
+				attrs := []any{"pending_events", len(evs)}
+				if offlineFor > 0 {
+					attrs = append(attrs, "offline_for", offlineFor.Round(time.Second).String())
+				}
+				a.Log.Info("events connected", attrs...)
+			}
+			if len(evs) == 0 {
+				continue
+			}
+			for _, e := range evs {
+				a.HandleEvent(e)
+				after = max(after, e.ID)
+			}
+			if err := a.API.Ack(ctx, after); err != nil {
+				a.Log.Warn("ack failed", "err", err)
+			}
+			_ = a.Buf.SetKV(ctx, kvLastEventID, strconv.FormatInt(after, 10))
 		}
-		for _, e := range evs {
-			a.HandleEvent(e)
-			after = max(after, e.ID)
-		}
-		if err := a.API.Ack(ctx, after); err != nil {
-			a.Log.Warn("ack failed", "err", err)
-		}
-		_ = a.Buf.SetKV(ctx, kvLastEventID, strconv.FormatInt(after, 10))
 	}
+}
+
+func (a *Agent) logPollErr(msg string, err error, failures int) {
+	var se *StatusError
+	if errors.As(err, &se) && se.Code == 401 {
+		a.Log.Error("device token rejected by server (revoked or wrong)")
+		return
+	}
+	a.Log.Warn(msg, "err", err, "failures", failures+1)
 }
 
 func (a *Agent) loadLastEventID(ctx context.Context) int64 {
@@ -302,9 +349,7 @@ func (a *Agent) HandleEvent(e Event) {
 	switch e.Type {
 	case "reminder.due":
 		a.Log.Info("event reminder.due", "id", e.ID, "text", p.Text, "age", age.Round(time.Second).String())
-		if age <= reminderMaxAge {
-			a.reminder, a.remindAt = p.Text, now
-		}
+		a.queueReminder(e.ID, p.Text, age, now)
 	case "task.done":
 		a.Log.Info("event task.done", "id", e.ID)
 		if age <= time.Duration(a.Cfg.Forms.TaskDoneWindowSeconds)*time.Second {

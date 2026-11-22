@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ardwiinoo/tunas/internal/agentstatus"
 	"github.com/ardwiinoo/tunas/internal/llm"
 	"github.com/ardwiinoo/tunas/internal/store"
 	"github.com/ardwiinoo/tunas/internal/store/storetest"
@@ -22,36 +23,69 @@ func (n *notes) NotifyOwner(_ context.Context, t string) error {
 	return nil
 }
 
-func TestAgentDownOncePerOutage(t *testing.T) {
+func TestAgentOfflineOnlineNotices(t *testing.T) {
 	db := storetest.New(t)
 	ctx := context.Background()
 	now := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
 	n := &notes{}
-	m := NewMonitor(db, n, func() time.Time { return now }, slog.New(slog.DiscardHandler))
-
-	if err := m.CheckAgent(ctx); err != nil || len(n.msgs) != 0 {
-		t.Fatal("no devices: no alert")
+	m := NewMonitor(db, n, func() time.Time { return now }, time.UTC, slog.New(slog.DiscardHandler))
+	check := func(step string, want int) {
+		t.Helper()
+		if err := m.CheckAgent(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if len(n.msgs) != want {
+			t.Fatalf("%s: %d messages %q, want %d", step, len(n.msgs), n.msgs, want)
+		}
 	}
+
+	check("no devices", 0)
 	_, tok, _ := db.CreateDevice(ctx, "laptop")
-	_, _ = db.AuthDevice(ctx, tok, now) // seen now
+	seen := func() { _, _ = db.AuthDevice(ctx, tok, now) }
+	seen() // 10:00
 
-	now = now.Add(23 * time.Hour)
-	_ = m.CheckAgent(ctx)
-	if len(n.msgs) != 0 {
-		t.Fatal("alert before 24h")
+	now = now.Add(15 * time.Minute)
+	check("exactly 15 min", 0)
+	now = now.Add(time.Minute)
+	check("offline after 15 min", 1)
+	if n.msgs[0] != "💤 Laptop offline sejak 10:00." {
+		t.Fatalf("offline text = %q", n.msgs[0])
 	}
+	now = now.Add(3 * time.Hour)
+	check("still offline: once per outage", 1)
+
+	seen() // back at 13:16
+	check("back online", 2)
+	if n.msgs[1] != "✅ Laptop kembali online." {
+		t.Fatalf("online text = %q", n.msgs[1])
+	}
+	check("online: nothing new", 2)
+
+	// flapping within the hour: each notice kind at most once per hour
+	now = now.Add(20 * time.Minute) // 13:36, last seen 13:16
+	check("offline again (offline notice was 3.5 h ago)", 3)
+	seen()
+	check("online again within the hour of the last online notice: quiet", 3)
+	now = now.Add(20 * time.Minute) // 13:56: offline 20 min, offline notice sent 20 min ago
+	check("second outage within the hour is quiet", 3)
+	seen()
+	check("no online notice without an offline one", 3)
+	now = now.Add(70 * time.Minute)
+	check("after the cooldown the notice goes out", 4)
+
+	// switched off with /settings: no notices at all
+	if err := db.SetSetting(ctx, agentstatus.SettingNotify, false); err != nil {
+		t.Fatal(err)
+	}
+	seen()
+	check("off: no online notice", 4)
 	now = now.Add(2 * time.Hour)
-	_ = m.CheckAgent(ctx)
-	now = now.Add(3 * time.Hour) // still down, past cooldown: no repeat within the same outage
-	_ = m.CheckAgent(ctx)
-	if len(n.msgs) != 1 || !strings.Contains(n.msgs[0], "tidak terlihat sejak 25 jam") {
-		t.Fatalf("alerts = %q", n.msgs)
-	}
-	_, _ = db.AuthDevice(ctx, tok, now) // comes back
-	_ = m.CheckAgent(ctx)
-	if len(n.msgs) != 2 || !strings.Contains(n.msgs[1], "terhubung lagi") {
-		t.Fatalf("recovery = %q", n.msgs)
-	}
+	check("off: no offline notice", 4)
+
+	// revoked devices are ignored
+	_ = db.RevokeDevice(ctx, "laptop", now)
+	_ = db.SetSetting(ctx, agentstatus.SettingNotify, true)
+	check("revoked", 4)
 }
 
 type flaky struct{ err error }
@@ -66,7 +100,7 @@ func (f *flaky) Complete(context.Context, []llm.Message) (string, error) {
 func TestLLMFailureAlertWithCooldown(t *testing.T) {
 	now := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
 	n := &notes{}
-	m := NewMonitor(nil, n, func() time.Time { return now }, slog.New(slog.DiscardHandler))
+	m := NewMonitor(nil, n, func() time.Time { return now }, time.UTC, slog.New(slog.DiscardHandler))
 	inner := &flaky{err: &llm.StatusError{Code: 429}}
 	c := m.Watch(inner)
 	ctx := context.Background()
@@ -111,7 +145,7 @@ func TestCleanupAndExport(t *testing.T) {
 		{Start: now.Add(-time.Hour), App: "Code.exe", Category: "work", ActiveSeconds: 42},
 	})
 	_, _ = db.CreateTask(ctx, "beli kopi")
-	m := NewMonitor(db, &notes{}, func() time.Time { return now }, slog.New(slog.DiscardHandler))
+	m := NewMonitor(db, &notes{}, func() time.Time { return now }, time.UTC, slog.New(slog.DiscardHandler))
 	if err := m.Cleanup(ctx); err != nil {
 		t.Fatal(err)
 	}

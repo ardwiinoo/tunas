@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-telegram/bot/models"
 
+	"github.com/ardwiinoo/tunas/internal/agentstatus"
 	"github.com/ardwiinoo/tunas/internal/store"
 	"github.com/ardwiinoo/tunas/internal/store/storetest"
 )
@@ -121,5 +122,46 @@ func TestCommandsFlow(t *testing.T) {
 	got := expect("/today", "📊 Hari ini (Sen 23 Nov)")
 	if !strings.Contains(got, "1. Code.exe — 2 m") || strings.Contains(got, "Old.exe") {
 		t.Fatalf("/today = %q", got)
+	}
+}
+
+func TestStatusAndSettings(t *testing.T) {
+	db := storetest.New(t)
+	loc, _ := time.LoadLocation("Asia/Jakarta")
+	now := time.Date(2026, 11, 22, 20, 52, 0, 0, loc)
+	c := &Commands{DB: db, Loc: loc, Now: func() time.Time { return now }, Log: slog.New(slog.DiscardHandler)}
+	ctx := context.Background()
+
+	if got := c.Handle(ctx, "/status"); !strings.Contains(got, "Belum ada perangkat") {
+		t.Fatalf("no device: %q", got)
+	}
+	d, tok, _ := db.CreateDevice(ctx, "laptop")
+	_, _ = db.AuthDevice(ctx, tok, now.Add(-12*time.Second))
+	_ = db.Heartbeat(ctx, d.ID, "agent-v1.0.0", false, now.Add(-12*time.Second))
+	_ = db.CreateEvent(ctx, "task.created", map[string]any{"id": 1})
+	got := c.Handle(ctx, "/status")
+	if !strings.Contains(got, "Laptop: online (terakhir terlihat 12 detik lalu)") ||
+		!strings.Contains(got, "agent-v1.0.0") || !strings.Contains(got, "Event tertunda: 1") {
+		t.Fatalf("online: %q", got)
+	}
+	now = now.Add(2*time.Hour + 10*time.Minute)
+	if got := c.Handle(ctx, "/status"); !strings.Contains(got, "offline sejak 20:51 (2 jam 10 menit)") {
+		t.Fatalf("offline: %q", got)
+	}
+
+	if got := c.Handle(ctx, "/settings"); !strings.Contains(got, "notif_status: on") {
+		t.Fatalf("settings: %q", got)
+	}
+	if got := c.Handle(ctx, "/settings notif_status off"); !strings.Contains(got, "notif_status sekarang off") {
+		t.Fatalf("set off: %q", got)
+	}
+	if on, _ := agentstatus.NotifyEnabled(ctx, db); on {
+		t.Fatal("setting not stored")
+	}
+	if got := c.Handle(ctx, "/settings notif_status"); !strings.Contains(got, "Pakai") {
+		t.Fatalf("usage: %q", got)
+	}
+	if got := c.Handle(ctx, "/settings apa on"); !strings.Contains(got, "tidak dikenal") {
+		t.Fatalf("unknown: %q", got)
 	}
 }

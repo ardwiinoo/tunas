@@ -122,6 +122,16 @@ func (c *Client) State(ctx context.Context) (State, error) {
 	return s, err
 }
 
+// Heartbeat reports the agent's version and tracking state; the server
+// answers with the number of events still waiting for this device.
+func (c *Client) Heartbeat(ctx context.Context, version string, paused bool) (int, error) {
+	var out struct {
+		Pending int `json:"pending_events"`
+	}
+	err := c.do(ctx, http.MethodPost, "/v1/agent/heartbeat", map[string]any{"version": version, "paused": paused}, &out)
+	return out.Pending, err
+}
+
 // Chat sends overlay text and returns Tunas's reply.
 func (c *Client) Chat(ctx context.Context, text, form string) (string, error) {
 	var out struct {

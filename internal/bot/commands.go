@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ardwiinoo/tunas/internal/activity"
+	"github.com/ardwiinoo/tunas/internal/agentstatus"
 	"github.com/ardwiinoo/tunas/internal/reminders"
 	"github.com/ardwiinoo/tunas/internal/store"
 )
@@ -45,6 +46,8 @@ const helpText = `Halo, aku Tunas 🌱
 /form <id>|auto — atur form (biasa, fokus, tidur, senang, ingat, tegur)
 /cari <kueri> — cari di web (dengan sumber)
 /export — unduh semua data (JSON.gz)
+/status — status agen laptop (online/offline, versi, event tertunda)
+/settings — pengaturan (mis. kabar laptop offline/online)
 /ping — cek hidup
 
 Bisa juga kirim kalimat biasa, mis. "ingatkan aku jam 5 sore kirim laporan".`
@@ -94,6 +97,10 @@ func (c *Commands) dispatch(ctx context.Context, cmd, args string) (string, erro
 		return c.ping(ctx)
 	case "today":
 		return c.today(ctx)
+	case "status":
+		return c.status(ctx)
+	case "settings":
+		return c.settings(ctx, args)
 	}
 	if c.Extra != nil {
 		if reply, ok := c.Extra(ctx, cmd, args); ok {
@@ -218,6 +225,72 @@ func (c *Commands) ping(ctx context.Context) (string, error) {
 		reply += fmt.Sprintf("\nPerangkat %s terakhir terlihat %s lalu.", d.Name, ago(now.Sub(*d.LastSeenAt)))
 	}
 	return reply, nil
+}
+
+func (c *Commands) status(ctx context.Context) (string, error) {
+	devs, err := c.DB.ListDevices(ctx)
+	if err != nil {
+		return "", err
+	}
+	now := c.Now()
+	var parts []string
+	for _, d := range devs {
+		if d.RevokedAt != nil {
+			continue
+		}
+		pending, err := c.DB.PendingEvents(ctx, d.ID)
+		if err != nil {
+			return "", err
+		}
+		parts = append(parts, agentstatus.Describe(d, pending, now, c.Loc))
+	}
+	if len(parts) == 0 {
+		return "Belum ada perangkat. Buat dulu di server: tunas-server device create --name laptop", nil
+	}
+	return strings.Join(parts, "\n\n"), nil
+}
+
+// settingDefs are the switches /settings can change.
+var settingDefs = []struct{ name, key, desc string }{
+	{"notif_status", agentstatus.SettingNotify, "kabar saat laptop offline > 15 menit / kembali online"},
+}
+
+func (c *Commands) settings(ctx context.Context, args string) (string, error) {
+	f := strings.Fields(strings.ToLower(args))
+	if len(f) == 0 {
+		var b strings.Builder
+		b.WriteString("Pengaturan:")
+		for _, d := range settingDefs {
+			on := true
+			if _, err := c.DB.GetSetting(ctx, d.key, &on); err != nil {
+				return "", err
+			}
+			fmt.Fprintf(&b, "\n• %s: %s — %s", d.name, onOff(on), d.desc)
+		}
+		b.WriteString("\nUbah: /settings <nama> on|off, mis. /settings notif_status off")
+		return b.String(), nil
+	}
+	for _, d := range settingDefs {
+		if f[0] != d.name {
+			continue
+		}
+		if len(f) != 2 || (f[1] != "on" && f[1] != "off") {
+			return fmt.Sprintf("Pakai: /settings %s on|off", d.name), nil
+		}
+		on := f[1] == "on"
+		if err := c.DB.SetSetting(ctx, d.key, on); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("✅ %s sekarang %s.", d.name, onOff(on)), nil
+	}
+	return "Pengaturan tidak dikenal. Ketik /settings untuk daftarnya.", nil
+}
+
+func onOff(on bool) string {
+	if on {
+		return "on"
+	}
+	return "off"
 }
 
 func ago(d time.Duration) string {

@@ -18,11 +18,20 @@ var ErrExists = errors.New("already exists")
 
 // Device is a registered agent.
 type Device struct {
-	ID         int64
-	Name       string
-	LastSeenAt *time.Time
-	RevokedAt  *time.Time
-	CreatedAt  time.Time
+	ID             int64
+	Name           string
+	LastSeenAt     *time.Time // any authenticated request
+	RevokedAt      *time.Time
+	CreatedAt      time.Time
+	AgentVersion   string     // from the last heartbeat
+	TrackingPaused bool       // from the last heartbeat
+	HeartbeatAt    *time.Time // last heartbeat
+}
+
+const deviceCols = `id, name, last_seen_at, revoked_at, created_at, agent_version, tracking_paused, heartbeat_at`
+
+func scanDevice(r pgx.Row, d *Device) error {
+	return r.Scan(&d.ID, &d.Name, &d.LastSeenAt, &d.RevokedAt, &d.CreatedAt, &d.AgentVersion, &d.TrackingPaused, &d.HeartbeatAt)
 }
 
 // HashToken returns the hex sha256 of a raw device token.
@@ -51,14 +60,13 @@ func (db *DB) CreateDevice(ctx context.Context, name string) (Device, string, er
 
 // ListDevices returns all devices.
 func (db *DB) ListDevices(ctx context.Context) ([]Device, error) {
-	rows, err := db.Pool.Query(ctx,
-		`select id, name, last_seen_at, revoked_at, created_at from devices order by id`)
+	rows, err := db.Pool.Query(ctx, `select `+deviceCols+` from devices order by id`)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (Device, error) {
 		var d Device
-		return d, r.Scan(&d.ID, &d.Name, &d.LastSeenAt, &d.RevokedAt, &d.CreatedAt)
+		return d, scanDevice(r, &d)
 	})
 }
 
@@ -78,19 +86,34 @@ func (db *DB) RevokeDevice(ctx context.Context, name string, now time.Time) erro
 // AuthDevice finds the active device for a raw token and updates last_seen_at.
 func (db *DB) AuthDevice(ctx context.Context, token string, now time.Time) (Device, error) {
 	var d Device
-	err := db.Pool.QueryRow(ctx,
+	err := scanDevice(db.Pool.QueryRow(ctx,
 		`update devices set last_seen_at=$2 where token_hash=$1 and revoked_at is null
-		 returning id, name, last_seen_at, revoked_at, created_at`,
-		HashToken(token), now).Scan(&d.ID, &d.Name, &d.LastSeenAt, &d.RevokedAt, &d.CreatedAt)
+		 returning `+deviceCols, HashToken(token), now), &d)
 	return d, notFound(err)
 }
 
 // LastSeenDevice returns the most recently seen active device (ErrNotFound if none).
 func (db *DB) LastSeenDevice(ctx context.Context) (Device, error) {
 	var d Device
-	err := db.Pool.QueryRow(ctx,
-		`select id, name, last_seen_at, revoked_at, created_at from devices
-		 where revoked_at is null and last_seen_at is not null order by last_seen_at desc limit 1`,
-	).Scan(&d.ID, &d.Name, &d.LastSeenAt, &d.RevokedAt, &d.CreatedAt)
+	err := scanDevice(db.Pool.QueryRow(ctx,
+		`select `+deviceCols+` from devices
+		 where revoked_at is null and last_seen_at is not null order by last_seen_at desc limit 1`), &d)
 	return d, notFound(err)
+}
+
+// Heartbeat records the agent's version and tracking state.
+func (db *DB) Heartbeat(ctx context.Context, deviceID int64, version string, paused bool, now time.Time) error {
+	_, err := db.Pool.Exec(ctx,
+		`update devices set agent_version=$2, tracking_paused=$3, heartbeat_at=$4, last_seen_at=$4 where id=$1`,
+		deviceID, version, paused, now)
+	return err
+}
+
+// PendingEvents counts events the device has not acknowledged yet.
+func (db *DB) PendingEvents(ctx context.Context, deviceID int64) (int, error) {
+	var n int
+	err := db.Pool.QueryRow(ctx,
+		`select count(*) from events where acked_at is null and (device_id is null or device_id = $1)`,
+		deviceID).Scan(&n)
+	return n, err
 }
