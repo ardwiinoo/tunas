@@ -267,7 +267,7 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 	case wmHotkey:
 		o.p.OnHotkey(now)
 		o.sync(now)
-		if o.p.Input {
+		if o.p.Typing() {
 			pSetForegroundWindow.Call(hwnd) //nolint:errcheck
 		}
 		return 0
@@ -275,11 +275,11 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 		o.onChar(uint16(wp), now)
 		return 0
 	case wmLButtonDown:
-		o.p.Dismiss()
+		o.p.Dismiss(now)
 		o.sync(now)
 		return 0
 	case wmMouseActivate:
-		if !o.p.Input {
+		if !o.p.Typing() {
 			return maNoActivate // clicking Tunas must not steal focus
 		}
 	case wmClose:
@@ -294,7 +294,7 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 }
 
 func (o *Overlay) onChar(u uint16, now time.Time) {
-	if !o.p.Input {
+	if !o.p.Typing() {
 		return
 	}
 	switch {
@@ -355,12 +355,12 @@ func (o *Overlay) tick(now time.Time) {
 
 // sync applies the presenter state: show/hide, timer rate, and redraw.
 func (o *Overlay) sync(now time.Time) {
-	if o.p.Visible != o.shown {
-		o.shown = o.p.Visible
+	if o.p.Visible() != o.shown {
+		o.shown = o.p.Visible()
 		if o.shown {
 			o.place()
 			cmd := uintptr(swShowNoActive)
-			if o.p.Input {
+			if o.p.Typing() {
 				cmd = swShow
 			}
 			o.render(now)                                                                          // content first, then show: no flash of stale frame

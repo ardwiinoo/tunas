@@ -323,3 +323,6 @@ func (a *Agent) HandleEvent(e Event) {
 		a.Log.Debug("unknown event", "type", e.Type)
 	}
 }
+
+// ErrAlreadyRunning is returned by SingleInstance when another agent holds the lock.
+var ErrAlreadyRunning = errors.New("another tunas-agent is already running")

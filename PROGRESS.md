@@ -91,6 +91,8 @@ Menunggu pemilik:
 - [x] Klik tembus di area transparan (alpha per piksel), hanya karakter/bubble yang menerima klik
 - [x] Posisi sudut + monitor + margin di `config.yaml`; DPI per monitor
 - [x] Endpoint `POST /v1/agent/chat` (klien LLM + persona form aktif)
+- [x] Perbaikan: dua bubble sekaligus. Penyebabnya dua proses agen berjalan bersamaan (masing-masing punya overlay sendiri). Agen kini single instance (named mutex `Local\TunasAgent`; proses kedua keluar dengan kode 1). Pengelola bubble jadi state machine eksplisit (idle/menampilkan/input) dengan antrean: pengingat dan balasan yang datang saat ada bubble penting atau input menunggu giliran (maks 4), obrolan form diganti di tempat atau dibuang. Pengingat yang terpotong `Alt+Space` tampil lagi setelah input ditutup
+- [x] `--debug` membuka jendela konsol sendiri (build GUI `-H=windowsgui` tidak punya konsol); bila agen berhenti karena error, konsol menunggu Enter
 
 Gerbang fase:
 - tes tata letak bubble / pemecah teks / presenter / render semua form: lulus (bebas platform, jalan di CI Linux)
