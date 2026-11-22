@@ -40,6 +40,7 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /v1/agent/events", s.auth(s.getEvents))
 	mux.Handle("POST /v1/agent/events/ack", s.auth(s.ackEvents))
 	mux.Handle("GET /v1/agent/state", s.auth(s.getState))
+	mux.Handle("POST /v1/agent/heartbeat", s.auth(s.postHeartbeat))
 	if s.chat != nil {
 		mux.Handle("POST /v1/agent/chat", s.auth(s.postChat))
 	}
@@ -196,6 +197,35 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 		override = &v
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"form_override": override, "now": s.now()})
+}
+
+// postHeartbeat records the agent's version and tracking state (last_seen
+// is already updated by auth) and returns how many events wait for it.
+func (s *Server) postHeartbeat(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Version string `json:"version"`
+		Paused  bool   `json:"paused"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if len(req.Version) > 64 {
+		writeError(w, http.StatusBadRequest, "invalid version")
+		return
+	}
+	d := deviceFrom(r.Context())
+	if err := s.db.Heartbeat(r.Context(), d.ID, req.Version, req.Paused, s.now()); err != nil {
+		s.log.Error("heartbeat failed", "err", err)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	n, err := s.db.PendingEvents(r.Context(), d.ID)
+	if err != nil {
+		s.log.Error("pending events failed", "err", err)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"pending_events": n})
 }
 
 // MaxChatLen bounds overlay chat input (runes).

@@ -99,6 +99,13 @@ Menunggu pemilik:
   - Telegram: "typing" diulang tiap 4 detik; LLM gagal → balasan sesuai sebab (bukan diam).
   - Server: 9 detik per model lalu fallback, total maks 20 detik, model dan durasi dicatat di log.
   - Diuji end-to-end lokal dengan gateway palsu: model utama lambat → fallback menjawab dalam 11 detik; semua lambat → "Server lama menjawab" setelah 18 detik; server mati → "Tidak bisa hubungi server"; batas harian → "Jatah LLM hari ini habis".
+- [x] Status agen:
+  - Heartbeat tiap 60 detik (`POST /v1/agent/heartbeat`): versi agen dan status jeda disimpan per perangkat (migrasi 0002).
+  - `/status`: online/offline sejak kapan, versi, status jeda, event tertunda. `/settings notif_status on|off`.
+  - Kabar Telegram: offline > 15 menit dan kembali online, tiap jenis maks sekali per jam; tidak ada kabar online tanpa kabar offline sebelumnya.
+  - Ikon tray: hijau/kuning/merah, menu Jeda pelacakan / Buka log / Keluar.
+  - Menyambung ulang setelah sleep/offline: cek `GET /state` dulu, jadi hijau langsung (tidak menunggu long-poll 25 detik). Jumlah event tertunda dan lama offline dicatat. Pengingat > 2 menit tampil dengan "(tertunda N menit)" sesuai urutan; > 6 jam dilewati dan dicatat.
+  - Diuji langsung di Windows: ikon tray terdaftar; menu tampil dan "Jeda pelacakan" sampai ke server; server mati → kuning lalu merah dalam 15 detik; server hidup → hijau, `pending_events=2 offline_for=35s`, "minum obat (tertunda 30 menit)" tampil, pengingat 7 jam dilewati.
 
 Gerbang fase:
 - tes tata letak bubble / pemecah teks / presenter / render semua form: lulus (bebas platform, jalan di CI Linux)

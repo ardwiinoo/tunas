@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ardwiinoo/tunas/internal/agentstatus"
 	"github.com/ardwiinoo/tunas/internal/llm"
 	"github.com/ardwiinoo/tunas/internal/store"
 )
@@ -21,7 +22,6 @@ type Notifier interface {
 
 // Defaults from PRD Phase 5.
 const (
-	AgentDownAfter      = 24 * time.Hour
 	AlertCooldown       = time.Hour
 	LLMFailureThreshold = 3
 	ActivityRetention   = 180 * 24 * time.Hour
@@ -35,16 +35,19 @@ type Monitor struct {
 	Now    func() time.Time
 	Log    *slog.Logger
 
+	Loc *time.Location // for times in messages
+
 	mu         sync.Mutex
 	lastAlert  map[string]time.Time
-	agentDown  bool // alert sent for the current outage
+	devDown    map[int64]bool // offline notice sent for the device's current outage
 	llmFails   int
 	lastPruned time.Time
 }
 
 // NewMonitor creates a monitor.
-func NewMonitor(db *store.DB, n Notifier, now func() time.Time, log *slog.Logger) *Monitor {
-	return &Monitor{DB: db, Notify: n, Now: now, Log: log, lastAlert: map[string]time.Time{}}
+func NewMonitor(db *store.DB, n Notifier, now func() time.Time, loc *time.Location, log *slog.Logger) *Monitor {
+	return &Monitor{DB: db, Notify: n, Now: now, Loc: loc, Log: log,
+		lastAlert: map[string]time.Time{}, devDown: map[int64]bool{}}
 }
 
 // alert sends text unless an alert of the same kind went out within the cooldown.
@@ -65,46 +68,59 @@ func (m *Monitor) alert(ctx context.Context, kind, text string) bool {
 	return true
 }
 
-// CheckAgent alerts once per outage when no active device was seen for 24h,
-// and sends a recovery note when it comes back.
+// CheckAgent sends "<device> offline sejak HH:MM" once a device has not been
+// seen for agentstatus.NoticeAfter, and "<device> kembali online" when it
+// returns (only if the offline notice went out). Each notice kind is sent at
+// most once per AlertCooldown per device, and none at all when switched off
+// with /settings.
 func (m *Monitor) CheckAgent(ctx context.Context) error {
 	devs, err := m.DB.ListDevices(ctx)
 	if err != nil {
 		return err
 	}
-	var latest *time.Time
-	active := 0
+	now := m.Now()
 	for _, d := range devs {
-		if d.RevokedAt != nil {
+		if d.RevokedAt != nil || d.LastSeenAt == nil {
+			continue // revoked, or never connected: nothing to watch
+		}
+		offline := now.Sub(*d.LastSeenAt) > agentstatus.NoticeAfter
+		m.mu.Lock()
+		wasDown := m.devDown[d.ID]
+		m.mu.Unlock()
+		if offline == wasDown {
 			continue
 		}
-		active++
-		if d.LastSeenAt != nil && (latest == nil || d.LastSeenAt.After(*latest)) {
-			latest = d.LastSeenAt
+		on, err := agentstatus.NotifyEnabled(ctx, m.DB)
+		if err != nil {
+			return err
 		}
-	}
-	if active == 0 || latest == nil {
-		return nil // no agent set up yet: nothing to watch
-	}
-	down := m.Now().Sub(*latest) > AgentDownAfter
-	m.mu.Lock()
-	wasDown := m.agentDown
-	m.mu.Unlock()
-	switch {
-	case down && !wasDown:
-		if m.alert(ctx, "agent_down", fmt.Sprintf("⚠️ Agen laptop tidak terlihat sejak %s lalu.",
-			roundDur(m.Now().Sub(*latest)))) {
-			m.mu.Lock()
-			m.agentDown = true
-			m.mu.Unlock()
+		name := agentstatus.Name(d)
+		if offline {
+			if !on {
+				continue
+			}
+			text := fmt.Sprintf("💤 %s offline sejak %s.", name, agentstatus.Clock(*d.LastSeenAt, now, m.Loc))
+			if m.alert(ctx, fmt.Sprintf("agent_offline:%d", d.ID), text) {
+				m.setDown(d.ID, true)
+			}
+			continue
 		}
-	case !down && wasDown:
-		m.mu.Lock()
-		m.agentDown = false
-		m.mu.Unlock()
-		_ = m.Notify.NotifyOwner(ctx, "✅ Agen laptop terhubung lagi.")
+		m.setDown(d.ID, false)
+		if on {
+			m.alert(ctx, fmt.Sprintf("agent_online:%d", d.ID), fmt.Sprintf("✅ %s kembali online.", name))
+		}
 	}
 	return nil
+}
+
+func (m *Monitor) setDown(id int64, down bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if down {
+		m.devDown[id] = true
+	} else {
+		delete(m.devDown, id)
+	}
 }
 
 // Cleanup deletes old activity (180 days) and old acked events, once a day.
@@ -174,12 +190,4 @@ func (w *watched) Complete(ctx context.Context, msgs []llm.Message) (string, err
 			fmt.Sprintf("⚠️ AI gagal %d kali berturut-turut (terakhir: %v). Cek Bifrost/model di .env.", n, err))
 	}
 	return out, err
-}
-
-func roundDur(d time.Duration) string {
-	h := int(d.Hours())
-	if h >= 48 {
-		return fmt.Sprintf("%d hari", h/24)
-	}
-	return fmt.Sprintf("%d jam", h)
 }

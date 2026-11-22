@@ -94,7 +94,7 @@ func serve() error {
 	var tgBot *bot.Telegram // assigned below; used by monitor/export closures
 	monitor := ops.NewMonitor(db, notifierFunc(func(ctx context.Context, text string) error {
 		return tgBot.NotifyOwner(ctx, text)
-	}), time.Now, log)
+	}), time.Now, cfg.Location, log)
 	var completer llm.Completer = llm.Disabled{}
 	if cfg.LLMEnabled() {
 		completer = &llm.Capped{
@@ -160,7 +160,7 @@ func serve() error {
 	wg.Go(func() { sched.Run(ctx) })
 	wg.Go(func() { _ = tgBot.Run(ctx) })
 	wg.Go(func() { asst.RunDaily(ctx, tgBot) })
-	wg.Go(func() { monitor.Run(ctx, 5*time.Minute) })
+	wg.Go(func() { monitor.Run(ctx, time.Minute) }) // offline notice ~15 min after the last contact
 
 	select {
 	case <-ctx.Done():

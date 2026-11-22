@@ -81,9 +81,11 @@ func run(cfgPath string, debug bool) error {
 
 	var out io.Writer = os.Stderr
 	level := slog.LevelDebug
+	logPath := "" // --debug logs to the console
 	if !debug {
 		level = slog.LevelInfo
-		lf, err := agent.OpenRotatingFile(filepath.Join(dataDir(), "agent.log"), 5<<20)
+		logPath = filepath.Join(dataDir(), "agent.log")
+		lf, err := agent.OpenRotatingFile(logPath, 5<<20)
 		if err != nil {
 			return err
 		}
@@ -121,17 +123,17 @@ func run(cfgPath string, debug bool) error {
 		Buf:     buf,
 		API:     client,
 		Log:     log,
+		Version: version,
 	}
 
-	var ov *overlay.Overlay
-	if cfg.Overlay.Enabled {
-		ov, err = overlay.New(cfg.Overlay, func(ctx context.Context, text string, f forms.Form) (string, error) {
-			return client.Chat(ctx, text, string(f))
-		}, log)
-		if err != nil {
-			log.Warn("overlay disabled", "err", err)
-			ov = nil
-		}
+	// The window also carries the tray icon, so it runs even when the
+	// character is disabled in config.yaml (tray only).
+	ov, err := overlay.New(cfg.Overlay, func(ctx context.Context, text string, f forms.Form) (string, error) {
+		return client.Chat(ctx, text, string(f))
+	}, log)
+	if err != nil {
+		log.Warn("overlay and tray unavailable", "err", err)
+		ov = nil
 	}
 	if ov == nil {
 		err = a.Run(ctx)
@@ -139,7 +141,12 @@ func run(cfgPath string, debug bool) error {
 		return err
 	}
 
+	ov.CharacterOff = !cfg.Overlay.Enabled
+	ov.OnPause = a.SetPaused
+	ov.OnQuit = stop
+	ov.LogPath = logPath
 	a.OnForm = ov.Notify
+	a.OnConn = ov.SetConn
 	done := make(chan error, 1)
 	go func() { done <- a.Run(ctx) }()
 	if err := ov.Run(ctx); err != nil { // blocks on the main goroutine

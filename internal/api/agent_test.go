@@ -209,6 +209,28 @@ func TestChat(t *testing.T) {
 	}
 }
 
+func TestHeartbeat(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if err := h.db.CreateEvent(ctx, "task.created", map[string]any{"id": 1}); err != nil {
+		t.Fatal(err)
+	}
+	code, out := h.do("POST", "/v1/agent/heartbeat", h.token, map[string]any{"version": "agent-v1.2.3", "paused": true})
+	if code != 200 || out["pending_events"] != float64(1) {
+		t.Fatalf("heartbeat = %d %v", code, out)
+	}
+	d, err := h.db.LastSeenDevice(ctx)
+	if err != nil || d.AgentVersion != "agent-v1.2.3" || !d.TrackingPaused || d.HeartbeatAt == nil || !d.HeartbeatAt.Equal(h.now) {
+		t.Fatalf("device = %+v %v", d, err)
+	}
+	if code, _ := h.do("POST", "/v1/agent/heartbeat", h.token, map[string]any{"version": strings.Repeat("v", 65)}); code != 400 {
+		t.Errorf("long version → %d", code)
+	}
+	if code, _ := h.do("POST", "/v1/agent/heartbeat", "", map[string]any{}); code != 401 {
+		t.Errorf("no token → %d", code)
+	}
+}
+
 func TestHealthzChecksDB(t *testing.T) {
 	h := newHarness(t)
 	resp, err := http.Get(h.srv.URL + "/healthz")

@@ -11,7 +11,7 @@ Asisten pribadi 24/7 untuk satu pengguna: bot Telegram (tugas, pengingat, ringka
 
 ## Perintah Telegram
 
-`/task`, `/tasks`, `/done`, `/remind`, `/reminders`, `/cancel`, `/today`, `/tanya`, `/form`, `/cari`, `/export`, `/ping`, `/help`. Kalimat biasa ("ingatkan aku jam 5 sore kirim laporan") dipahami lewat LLM dan selalu dikonfirmasi dengan tombol Ya/Batal.
+`/task`, `/tasks`, `/done`, `/remind`, `/reminders`, `/cancel`, `/today`, `/tanya`, `/form`, `/cari`, `/export`, `/status`, `/settings`, `/ping`, `/help`. Kalimat biasa ("ingatkan aku jam 5 sore kirim laporan") dipahami lewat LLM dan selalu dikonfirmasi dengan tombol Ya/Batal.
 
 ## Skrip
 
