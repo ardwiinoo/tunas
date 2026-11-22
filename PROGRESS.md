@@ -81,3 +81,26 @@ Gerbang fase:
 
 Menunggu pemilik:
 - Virtual key Bifrost + env LLM (DEPLOY.md bagian 11), lalu smoke test penerimaan Fase 3.
+
+## Fase 4: Karakter Tunas di layar (overlay) [x] (diuji di laptop pemilik terhadap server lokal)
+- [x] Overlay transparan, tanpa bingkai, selalu di atas. Prototipe Ebitengine dibuat dulu; karena memaksa OpenGL (218 MB saat terlihat) diganti jalur cadangan PRD: Win32 layered window (lihat DECISIONS)
+- [x] Bubble bersudut bulat dengan ekor, digambar jalur vektor; teks digambar sendiri dengan font tersemat (Go Regular, BSD-3); ukuran menyesuaikan teks; kata dipatahkan otomatis (maks 7 baris, sisanya "…")
+- [x] Karakter prosedural sesuai 11.1 (6 form: mata, mulut, daun, pipi, loncat senang, napas tidur, kedip & goyang daun biasa) di balik antarmuka `Renderer`
+- [x] Muncul/hilang: tersembunyi (timer 5 Hz, tanpa menggambar) kecuali ada pemicu (pengingat, tugas selesai, tegur, chat), tampil sesuai `duration` lalu hilang
+- [x] Hotkey global `Alt+Space` (`RegisterHotKey`) → input di bubble → Enter → `POST /v1/agent/chat` → balasan di bubble
+- [x] Klik tembus di area transparan (alpha per piksel), hanya karakter/bubble yang menerima klik
+- [x] Posisi sudut + monitor + margin di `config.yaml`; DPI per monitor
+- [x] Endpoint `POST /v1/agent/chat` (klien LLM + persona form aktif)
+
+Gerbang fase:
+- tes tata letak bubble / pemecah teks / presenter / render semua form: lulus (bebas platform, jalan di CI Linux)
+- build Windows: lulus (12,5 MB)
+- ukur memori tersembunyi & terlihat: diukur agent di laptop pemilik (server lokal)
+
+Angka ukur (agen + overlay, Windows, 12 core, layar 100%):
+- tersembunyi: working set 24,6 MB, CPU 0,01% semua core (0,17% satu core)
+- terlihat (mode input, animasi 15 fps): working set 24,8 sampai 26,2 MB, CPU 0,68% semua core (8,2% satu core)
+- uji end-to-end lokal: event `reminder.due` → bubble pengingat tampil; hotkey (disimulasikan via WM_HOTKEY) → "halo tunas" + Enter → balasan server tampil; `WindowFromPoint`: sudut transparan tembus, badan karakter menangkap klik.
+
+Menunggu pemilik:
+- Smoke test di laptop dengan server produksi (DEPLOY.md bagian 12), termasuk tekan `Alt+Space` sungguhan dan layar ber-DPI > 100%.

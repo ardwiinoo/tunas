@@ -27,6 +27,7 @@ import (
 	"github.com/ardwiinoo/tunas/internal/assist"
 	"github.com/ardwiinoo/tunas/internal/bot"
 	"github.com/ardwiinoo/tunas/internal/config"
+	"github.com/ardwiinoo/tunas/internal/forms"
 	"github.com/ardwiinoo/tunas/internal/llm"
 	"github.com/ardwiinoo/tunas/internal/reminders"
 	"github.com/ardwiinoo/tunas/internal/store"
@@ -120,8 +121,14 @@ func serve() error {
 	sched := reminders.NewScheduler(db, tgBot, time.Now, cfg.Location, log)
 
 	httpSrv := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           api.New(log, api.Options{DB: db}),
+		Addr: cfg.HTTPAddr,
+		Handler: api.New(log, api.Options{DB: db, Chat: func(ctx context.Context, form, text string) string {
+			f := forms.Form(form)
+			if !forms.Valid(f) {
+				f = asst.ActiveForm(ctx)
+			}
+			return asst.ChatAs(ctx, f, text)
+		}}),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}

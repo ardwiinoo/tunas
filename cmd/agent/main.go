@@ -16,6 +16,8 @@ import (
 
 	"github.com/ardwiinoo/tunas/internal/agent"
 	"github.com/ardwiinoo/tunas/internal/config"
+	"github.com/ardwiinoo/tunas/internal/forms"
+	"github.com/ardwiinoo/tunas/internal/overlay"
 )
 
 // version is set at build time via -ldflags "-X main.version=...".
@@ -83,15 +85,40 @@ func run(cfgPath string, debug bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	log.Info("agent started", "version", version, "server", cfg.ServerURL)
+	log.Info("agent started", "version", version, "server", cfg.ServerURL, "overlay", cfg.Overlay.Enabled)
+	client := agent.NewClient(cfg.ServerURL, cfg.DeviceToken)
 	a := &agent.Agent{
 		Cfg:     cfg,
 		Sampler: agent.NewSampler(),
 		Buf:     buf,
-		API:     agent.NewClient(cfg.ServerURL, cfg.DeviceToken),
+		API:     client,
 		Log:     log,
 	}
-	err = a.Run(ctx)
+
+	var ov *overlay.Overlay
+	if cfg.Overlay.Enabled {
+		ov, err = overlay.New(cfg.Overlay, func(ctx context.Context, text string, f forms.Form) (string, error) {
+			return client.Chat(ctx, text, string(f))
+		}, log)
+		if err != nil {
+			log.Warn("overlay disabled", "err", err)
+			ov = nil
+		}
+	}
+	if ov == nil {
+		err = a.Run(ctx)
+		log.Info("agent stopped")
+		return err
+	}
+
+	a.OnForm = ov.Notify
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	if err := ov.Run(ctx); err != nil { // blocks on the main goroutine
+		log.Error("overlay stopped", "err", err)
+		stop()
+	}
+	err = <-done
 	log.Info("agent stopped")
 	return err
 }

@@ -106,3 +106,12 @@ func (c *Client) State(ctx context.Context) (State, error) {
 	err := c.do(ctx, http.MethodGet, "/v1/agent/state", nil, &s)
 	return s, err
 }
+
+// Chat sends overlay text and returns Tunas's reply.
+func (c *Client) Chat(ctx context.Context, text, form string) (string, error) {
+	var out struct {
+		Reply string `json:"reply"`
+	}
+	err := c.do(ctx, http.MethodPost, "/v1/agent/chat", map[string]string{"text": text, "form": form}, &out)
+	return out.Reply, err
+}

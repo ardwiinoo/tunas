@@ -39,6 +39,9 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /v1/agent/events", s.auth(s.getEvents))
 	mux.Handle("POST /v1/agent/events/ack", s.auth(s.ackEvents))
 	mux.Handle("GET /v1/agent/state", s.auth(s.getState))
+	if s.chat != nil {
+		mux.Handle("POST /v1/agent/chat", s.auth(s.postChat))
+	}
 }
 
 // auth requires a valid, unrevoked device token.
@@ -192,4 +195,23 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 		override = &v
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"form_override": override, "now": s.now()})
+}
+
+// MaxChatLen bounds overlay chat input (runes).
+const MaxChatLen = 500
+
+func (s *Server) postChat(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Text string `json:"text"`
+		Form string `json:"form"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.Text = strings.TrimSpace(req.Text)
+	if req.Text == "" || utf8.RuneCountInString(req.Text) > MaxChatLen || len(req.Form) > 16 {
+		writeError(w, http.StatusBadRequest, "invalid text")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"reply": s.chat(r.Context(), req.Form, req.Text)})
 }

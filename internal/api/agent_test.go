@@ -31,7 +31,8 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	h := &harness{t: t, db: db, token: token, now: time.Now().Truncate(time.Minute)}
-	h.srv = httptest.NewServer(New(slog.New(slog.DiscardHandler), Options{DB: db, Now: func() time.Time { return h.now }}))
+	h.srv = httptest.NewServer(New(slog.New(slog.DiscardHandler), Options{DB: db, Now: func() time.Time { return h.now },
+		Chat: func(_ context.Context, form, text string) string { return "[" + form + "] " + text }}))
 	t.Cleanup(h.srv.Close)
 	return h
 }
@@ -175,5 +176,21 @@ func TestState(t *testing.T) {
 	_, out = h.do("GET", "/v1/agent/state", h.token, nil)
 	if out["form_override"] != "fokus" {
 		t.Fatalf("state = %v", out)
+	}
+}
+
+func TestChat(t *testing.T) {
+	h := newHarness(t)
+	code, out := h.do("POST", "/v1/agent/chat", h.token, map[string]string{"text": " halo ", "form": "fokus"})
+	if code != 200 || out["reply"] != "[fokus] halo" {
+		t.Fatalf("chat = %d %v", code, out)
+	}
+	for _, body := range []map[string]string{{"text": ""}, {"text": strings.Repeat("a", MaxChatLen+1)}} {
+		if code, _ := h.do("POST", "/v1/agent/chat", h.token, body); code != 400 {
+			t.Errorf("bad chat → %d", code)
+		}
+	}
+	if code, _ := h.do("POST", "/v1/agent/chat", "", map[string]string{"text": "x"}); code != 401 {
+		t.Error("chat without token")
 	}
 }

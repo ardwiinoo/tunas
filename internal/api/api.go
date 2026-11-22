@@ -2,6 +2,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -17,11 +18,12 @@ const errInternal = "internal error"
 
 // Server is the HTTP handler set.
 type Server struct {
-	log *slog.Logger
-	db  *store.DB
-	now func() time.Time
-	mux *http.ServeMux
-	rl  *rateLimiter
+	log  *slog.Logger
+	db   *store.DB
+	now  func() time.Time
+	mux  *http.ServeMux
+	rl   *rateLimiter
+	chat func(ctx context.Context, form, text string) string
 }
 
 // Options configures the API.
@@ -30,6 +32,8 @@ type Options struct {
 	Now func() time.Time
 	// RatePerMinute and RateBurst bound requests per client IP on /v1/.
 	RatePerMinute, RateBurst int
+	// Chat answers overlay chat (form may be "" for the server's active form).
+	Chat func(ctx context.Context, form, text string) string
 }
 
 // New builds the HTTP handler.
@@ -41,7 +45,7 @@ func New(log *slog.Logger, o Options) *Server {
 		o.RatePerMinute, o.RateBurst = 120, 30
 	}
 	s := &Server{log: log, db: o.DB, now: o.Now, mux: http.NewServeMux(),
-		rl: newRateLimiter(o.RatePerMinute, o.RateBurst, o.Now)}
+		rl: newRateLimiter(o.RatePerMinute, o.RateBurst, o.Now), chat: o.Chat}
 	s.mux.HandleFunc("GET /healthz", s.healthz)
 	s.routes()
 	return s
