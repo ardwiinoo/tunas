@@ -64,7 +64,23 @@ func New(db *store.DB, c llm.Completer, ms map[string]modes.Mode, loc *time.Loca
 	return &Assistant{DB: db, LLM: c, Modes: ms, Loc: loc, Now: now, Log: log, pending: map[string]pendingAction{}}
 }
 
-const fallbackNoLLM = "Maaf, aku belum bisa memahami kalimat bebas sekarang (AI sedang tidak tersedia atau kuota harian habis). Pakai perintah ya, ketik /help."
+// Replies when the LLM cannot answer. The bot always says something, never stays silent.
+const (
+	msgLLMFailed   = "LLM sedang bermasalah, coba lagi."
+	msgLLMCap      = "Jatah LLM hari ini habis. Sementara pakai perintah ya, ketik /help."
+	msgLLMDisabled = "AI belum diaktifkan di server. Pakai perintah ya, ketik /help."
+)
+
+// LLMFailText is the user-facing reply for a Complete error.
+func LLMFailText(err error) string {
+	switch llm.Kind(err) {
+	case llm.KindCap:
+		return msgLLMCap
+	case llm.KindDisabled:
+		return msgLLMDisabled
+	}
+	return msgLLMFailed
+}
 
 // --- intent classification -------------------------------------------------
 
@@ -153,7 +169,7 @@ func (a *Assistant) HandleText(ctx context.Context, text string) bot.Reply {
 	})
 	if err != nil {
 		a.logLLMErr("classify", err)
-		return bot.Reply{Text: fallbackNoLLM}
+		return bot.Reply{Text: LLMFailText(err)}
 	}
 	in, err := ParseIntent(raw)
 	if err != nil {
@@ -263,20 +279,25 @@ const factRule = "\nAturan: data (waktu, angka, nama aplikasi) di bagian FAKTA a
 
 // Chat replies in the active persona (no personal data is sent).
 func (a *Assistant) Chat(ctx context.Context, text string) string {
-	return a.ChatAs(ctx, a.ActiveForm(ctx), text)
+	out, err := a.ChatAs(ctx, a.ActiveForm(ctx), text)
+	if err != nil {
+		return LLMFailText(err)
+	}
+	return out
 }
 
-// ChatAs replies in the given form's persona.
-func (a *Assistant) ChatAs(ctx context.Context, f forms.Form, text string) string {
+// ChatAs replies in the given form's persona. The error (see llm.Kind) lets
+// callers tell the user why there is no answer.
+func (a *Assistant) ChatAs(ctx context.Context, f forms.Form, text string) (string, error) {
 	out, err := a.LLM.Complete(ctx, []llm.Message{
 		{Role: "system", Content: a.voice(f) + factRule},
 		{Role: "user", Content: text},
 	})
 	if err != nil {
 		a.logLLMErr("chat", err)
-		return fallbackNoLLM
+		return "", err
 	}
-	return out
+	return out, nil
 }
 
 // phrase asks the persona to write from facts; falls back to the facts text.
@@ -339,5 +360,5 @@ func (a *Assistant) logLLMErr(op string, err error) {
 		a.Log.Info("llm unavailable", "op", op, "reason", err.Error())
 		return
 	}
-	a.Log.Warn("llm failed", "op", op, "err", err)
+	a.Log.Warn("llm failed", "op", op, "kind", llm.Kind(err), "err", err)
 }

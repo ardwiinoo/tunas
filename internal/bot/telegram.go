@@ -117,16 +117,25 @@ func (t *Telegram) handle(ctx context.Context, b *tg.Bot, u *models.Update) {
 	if text == "" {
 		return
 	}
+	chatID := u.Message.Chat.ID
+	// Natural language and /tanya, /cari wait on the LLM or the web: show
+	// "typing..." until the reply is ready.
+	stopTyping := keepTyping(ctx, func(ctx context.Context) {
+		if _, err := b.SendChatAction(ctx, &tg.SendChatActionParams{ChatID: chatID, Action: models.ChatActionTyping}); err != nil && ctx.Err() == nil {
+			t.log.Debug("sendChatAction failed", "err", t.Redact(err))
+		}
+	}, typingFirst, typingEvery)
 	var reply Reply
 	if _, _, isCmd := SplitCommand(text); !isCmd && t.OnText != nil {
 		reply = t.OnText(ctx, text)
 	} else {
 		reply = Reply{Text: t.cmds.Handle(ctx, text)}
 	}
+	stopTyping()
 	if reply.Text == "" {
 		return
 	}
-	if err := t.SendReply(ctx, u.Message.Chat.ID, reply); err != nil {
+	if err := t.SendReply(ctx, chatID, reply); err != nil {
 		t.log.Warn("reply failed", "err", err)
 	}
 }

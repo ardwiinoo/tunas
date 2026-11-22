@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ardwiinoo/tunas/internal/llm"
 	"github.com/ardwiinoo/tunas/internal/store"
 	"github.com/ardwiinoo/tunas/internal/store/storetest"
 )
@@ -32,7 +33,15 @@ func newHarness(t *testing.T) *harness {
 	}
 	h := &harness{t: t, db: db, token: token, now: time.Now().Truncate(time.Minute)}
 	h.srv = httptest.NewServer(New(slog.New(slog.DiscardHandler), Options{DB: db, Now: func() time.Time { return h.now },
-		Chat: func(_ context.Context, form, text string) string { return "[" + form + "] " + text }}))
+		Chat: func(_ context.Context, form, text string) (string, error) {
+			switch text {
+			case "habis":
+				return "", llm.ErrCap
+			case "lambat":
+				return "", fmt.Errorf("x: %w", llm.ErrTimeout)
+			}
+			return "[" + form + "] " + text, nil
+		}}))
 	t.Cleanup(h.srv.Close)
 	return h
 }
@@ -192,6 +201,11 @@ func TestChat(t *testing.T) {
 	}
 	if code, _ := h.do("POST", "/v1/agent/chat", "", map[string]string{"text": "x"}); code != 401 {
 		t.Error("chat without token")
+	}
+	for text, want := range map[string]string{"habis": llm.KindCap, "lambat": llm.KindTimeout} {
+		if code, out := h.do("POST", "/v1/agent/chat", h.token, map[string]string{"text": text}); code != 503 || out["error"] != want {
+			t.Errorf("%s → %d %v", text, code, out)
+		}
 	}
 }
 

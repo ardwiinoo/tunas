@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/ardwiinoo/tunas/internal/agent"
 	"github.com/ardwiinoo/tunas/internal/forms"
 )
 
@@ -21,7 +22,7 @@ func TestRenderAllForms(t *testing.T) {
 		s := 1.5
 		c := NewCanvas(int(WindowW*s), int(WindowH*s))
 		sc := ComputeScene("bottom-right", "Halo, aku Tunas! Jangan lupa minum air putih ya.", measure)
-		Frame(c, Procedural{}, sc, f, face, 0.5, 0, s)
+		Frame(c, Procedural{}, sc, f, face, Anim{T: 0.5, Thinking: f == forms.Biasa, Think: 0.6}, s)
 
 		at := func(x, y float64) [4]uint8 {
 			o := c.Img.PixOffset(int(x*s), int(y*s))
@@ -57,5 +58,30 @@ func TestStrokeOverlapDoesNotCancel(t *testing.T) {
 	o := c.Img.PixOffset(20, 20)
 	if c.Img.Pix[o+3] != 255 {
 		t.Fatalf("overlapping stroke alpha %d", c.Img.Pix[o+3])
+	}
+}
+
+// Fixed UI texts must only use characters the embedded font has; a missing
+// glyph is drawn as a box.
+func TestFixedTextsHaveGlyphs(t *testing.T) {
+	face, err := NewFace(14)
+	if err != nil {
+		t.Fatal(err)
+	}
+	texts := []string{Cursor, "› ", "…", TextThinking, TextSlow}
+	for _, f := range []agent.ChatFail{agent.FailTimeout, agent.FailOffline, agent.FailCap, agent.FailLLM,
+		agent.FailDisabled, agent.FailAuth, agent.FailBusy, agent.FailServer} {
+		texts = append(texts, FailText(f))
+	}
+	for _, s := range texts {
+		for _, r := range s {
+			if _, ok := face.GlyphAdvance(r); !ok {
+				t.Errorf("font has no glyph for %q (U+%04X) in %q", r, r, s)
+			}
+		}
+	}
+	// sanity: the check must see a glyph Go Regular lacks
+	if _, ok := face.GlyphAdvance('▏'); ok {
+		t.Fatal("GlyphAdvance no longer reports missing glyphs; this test proves nothing")
 	}
 }

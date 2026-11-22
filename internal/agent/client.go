@@ -33,10 +33,19 @@ type Client struct {
 	http  *http.Client
 }
 
-// StatusError is a non-2xx response.
-type StatusError struct{ Code int }
+// StatusError is a non-2xx response. Reason is the server's {"error": ...}
+// value when it sent one (e.g. "llm_cap" from the chat endpoint).
+type StatusError struct {
+	Code   int
+	Reason string
+}
 
-func (e *StatusError) Error() string { return fmt.Sprintf("server returned %d", e.Code) }
+func (e *StatusError) Error() string {
+	if e.Reason != "" {
+		return fmt.Sprintf("server returned %d (%s)", e.Code, e.Reason)
+	}
+	return fmt.Sprintf("server returned %d", e.Code)
+}
 
 // NewClient creates a client. The token is sent only as a bearer header.
 func NewClient(baseURL, token string) *Client {
@@ -70,8 +79,14 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return &StatusError{Code: resp.StatusCode}
+		var e struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&e)
+		if len(e.Error) > 64 {
+			e.Error = e.Error[:64]
+		}
+		return &StatusError{Code: resp.StatusCode, Reason: e.Error}
 	}
 	if out == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
