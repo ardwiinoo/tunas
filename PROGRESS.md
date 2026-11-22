@@ -72,6 +72,8 @@ Menunggu pemilik:
 - [x] `modes/*.yaml` (embed) untuk 6 form; `/form <id>` dan `/form auto` (setting + event `form.set` ke agen)
 - [ ] Virtual key Bifrost khusus Tunas **[PEMILIK]**
 
+Angka ukur: container lokal dengan LLM aktif (key palsu) RSS 7,8 MiB, CPU 0%; 0 kebocoran token bot/key di log.
+
 Gerbang fase:
 - tes dengan klien LLM palsu: lulus
 - tidak ada data mentah/judul ke LLM: lulus (`TestAskUsesTemplateAndOnlyAggregates` memeriksa seluruh payload: tanpa timestamp mentah, tanpa field bucket)
