@@ -135,9 +135,9 @@ func serve() error {
 
 	httpSrv := &http.Server{
 		Addr: cfg.HTTPAddr,
-		Handler: api.New(log, api.Options{DB: db, Chat: func(ctx context.Context, form, text string) string {
+		Handler: api.New(log, api.Options{DB: db, Chat: func(ctx context.Context, form, text string) (string, error) {
 			if q, ok := cutPrefixFold(text, "cari "); ok {
-				return asst.Search(ctx, searcher, q)
+				return asst.Search(ctx, searcher, q), nil
 			}
 			f := forms.Form(form)
 			if !forms.Valid(f) {

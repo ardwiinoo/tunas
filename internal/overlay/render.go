@@ -12,10 +12,17 @@ import (
 // Renderer draws the character. The procedural renderer can later be
 // replaced by a sprite-sheet renderer without touching the state logic.
 type Renderer interface {
-	// DrawCharacter draws form f inside r (logical px) at time t (seconds
-	// since the form started) and device scale s. motion in [0,1] is a short
-	// random idle animation (0 = none).
-	DrawCharacter(c *Canvas, f forms.Form, r Rect, t, motion, s float64)
+	// DrawCharacter draws form f inside r (logical px) with animation
+	// clocks a at device scale s.
+	DrawCharacter(c *Canvas, f forms.Form, r Rect, a Anim, s float64)
+}
+
+// Anim carries the animation clocks for one frame.
+type Anim struct {
+	T        float64 // seconds since the form started
+	Motion   float64 // short random idle animation in [0,1] (0 = none)
+	Thinking bool    // waiting for a chat reply: the leaf sways slowly
+	Think    float64 // seconds since the chat was sent
 }
 
 // Palette from PRD 11.1 (premultiplied RGBA).
@@ -39,7 +46,8 @@ func hexColor(v uint32, a uint8) color.RGBA {
 type Procedural struct{}
 
 // DrawCharacter implements Renderer.
-func (Procedural) DrawCharacter(c *Canvas, f forms.Form, r Rect, t, motion, s float64) {
+func (Procedural) DrawCharacter(c *Canvas, f forms.Form, r Rect, a Anim, s float64) {
+	t, motion := a.T, a.Motion
 	size := 1.0
 	if f == forms.Fokus {
 		size = 0.92
@@ -57,7 +65,11 @@ func (Procedural) DrawCharacter(c *Canvas, f forms.Form, r Rect, t, motion, s fl
 	}
 	rx, ry := 44*sc, 38*sc
 
-	drawLeaf(c, cx, cy-ry+2*sc, leafAngle(f, t, motion), sc, lw)
+	angle := leafAngle(f, t, motion)
+	if a.Thinking {
+		angle += thinkSway(a.Think)
+	}
+	drawLeaf(c, cx, cy-ry+2*sc, angle, sc, lw)
 
 	var body Path
 	body.Ellipse(cx, cy, rx, ry)
@@ -71,6 +83,10 @@ func (Procedural) DrawCharacter(c *Canvas, f forms.Form, r Rect, t, motion, s fl
 
 	drawFace(c, f, cx, cy, sc, lw, t, motion)
 }
+
+// thinkSway is the slow pendulum of the leaf while Tunas is thinking
+// (about one swing every 2.4 s, ±0.25 rad).
+func thinkSway(t float64) float64 { return math.Sin(t*2.6) * 0.25 }
 
 func leafAngle(f forms.Form, t, motion float64) float64 {
 	switch f {
@@ -215,9 +231,9 @@ func DrawBubble(c *Canvas, b Rect, tailX, s float64) {
 }
 
 // Frame renders a whole overlay frame: character, bubble and text.
-func Frame(c *Canvas, r Renderer, sc Scene, f forms.Form, face font.Face, t, motion, s float64) {
+func Frame(c *Canvas, r Renderer, sc Scene, f forms.Form, face font.Face, a Anim, s float64) {
 	c.Clear()
-	r.DrawCharacter(c, f, sc.Char, t, motion, s)
+	r.DrawCharacter(c, f, sc.Char, a, s)
 	if sc.Bubble.W > 0 {
 		DrawBubble(c, sc.Bubble, sc.TailX, s)
 		for i, line := range sc.Lines {

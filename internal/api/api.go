@@ -23,7 +23,7 @@ type Server struct {
 	now  func() time.Time
 	mux  *http.ServeMux
 	rl   *rateLimiter
-	chat func(ctx context.Context, form, text string) string
+	chat func(ctx context.Context, form, text string) (string, error)
 }
 
 // Options configures the API.
@@ -33,7 +33,8 @@ type Options struct {
 	// RatePerMinute and RateBurst bound requests per client IP on /v1/.
 	RatePerMinute, RateBurst int
 	// Chat answers overlay chat (form may be "" for the server's active form).
-	Chat func(ctx context.Context, form, text string) string
+	// An error is an LLM failure, reported to the agent as llm.Kind.
+	Chat func(ctx context.Context, form, text string) (string, error)
 }
 
 // New builds the HTTP handler.

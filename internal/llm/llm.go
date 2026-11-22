@@ -31,24 +31,58 @@ var (
 	ErrDisabled = errors.New("llm disabled")
 	ErrCap      = errors.New("llm daily request cap reached")
 	ErrEmpty    = errors.New("llm returned empty content")
+	ErrTimeout  = errors.New("llm timed out")
 )
 
-// Client calls POST {base}/chat/completions with Bifrost fallbacks.
+// Failure kinds, for user-facing messages and the agent chat API.
+const (
+	KindCap      = "llm_cap"
+	KindTimeout  = "llm_timeout"
+	KindDisabled = "llm_disabled"
+	KindFailed   = "llm_failed"
+)
+
+// Kind classifies a Complete error.
+func Kind(err error) string {
+	switch {
+	case errors.Is(err, ErrCap):
+		return KindCap
+	case errors.Is(err, ErrDisabled):
+		return KindDisabled
+	case errors.Is(err, ErrTimeout), errors.Is(err, context.DeadlineExceeded):
+		return KindTimeout
+	}
+	return KindFailed
+}
+
+// Client calls POST {base}/chat/completions. It walks the model list itself
+// (primary, then fallbacks) so each model gets its own time budget: a slow
+// model is abandoned after PerModel and the whole call never exceeds Total.
 type Client struct {
 	BaseURL   string
 	APIKey    string
 	Model     string
 	Fallbacks []string
 	MaxTokens int
+	PerModel  time.Duration // budget for one model (including the length retry)
+	Total     time.Duration // budget for the whole call
 	HTTP      *http.Client
 	Log       *slog.Logger
 }
 
-// New creates a client with PRD defaults (45s timeout, 800 max tokens).
+// Default budgets.
+const (
+	DefaultPerModel = 9 * time.Second
+	DefaultTotal    = 20 * time.Second
+	minAttempt      = 2 * time.Second // do not start a model with less time than this
+)
+
+// New creates a client with defaults (800 max tokens, 9s per model, 20s total).
 func New(baseURL, apiKey, model string, fallbacks []string, log *slog.Logger) *Client {
 	return &Client{
 		BaseURL: strings.TrimRight(baseURL, "/"), APIKey: apiKey, Model: model, Fallbacks: fallbacks,
-		MaxTokens: 800, HTTP: &http.Client{Timeout: 45 * time.Second}, Log: log,
+		MaxTokens: 800, PerModel: DefaultPerModel, Total: DefaultTotal,
+		HTTP: &http.Client{Timeout: DefaultTotal + 5*time.Second}, Log: log,
 	}
 }
 
@@ -56,7 +90,6 @@ type chatRequest struct {
 	Model     string    `json:"model"`
 	Messages  []Message `json:"messages"`
 	MaxTokens int       `json:"max_tokens"`
-	Fallbacks []string  `json:"fallbacks,omitempty"`
 }
 
 type chatResponse struct {
@@ -75,18 +108,62 @@ type StatusError struct{ Code int }
 
 func (e *StatusError) Error() string { return fmt.Sprintf("llm gateway returned %d", e.Code) }
 
-// Complete sends msgs. If the model spent all tokens "thinking" (empty content,
-// finish_reason=length), it retries once with double max_tokens.
+// Complete tries each model in order until one answers. Timeouts, network
+// errors, 429/5xx and empty answers move on to the next model; an auth
+// error (401/403) stops at once since every model would fail the same way.
 func (c *Client) Complete(ctx context.Context, msgs []Message) (string, error) {
 	if c.APIKey == "" || c.Model == "" {
 		return "", ErrDisabled
 	}
-	content, finish, err := c.call(ctx, msgs, c.MaxTokens)
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, c.Total)
+	defer cancel()
+	var lastErr error
+	models := append([]string{c.Model}, c.Fallbacks...)
+	for i, model := range models {
+		dl, _ := ctx.Deadline()
+		left := time.Until(dl)
+		if left < minAttempt {
+			if lastErr == nil {
+				lastErr = ErrTimeout
+			}
+			break
+		}
+		content, err := c.tryModel(ctx, model, msgs, min(c.PerModel, left))
+		if err == nil {
+			c.Log.Info("llm served", "model", model, "attempt", i+1, "total_ms", time.Since(start).Milliseconds())
+			return content, nil
+		}
+		lastErr = err
+		c.Log.Warn("llm model failed", "model", model, "attempt", i+1, "kind", Kind(err), "err", err,
+			"total_ms", time.Since(start).Milliseconds())
+		if ctx.Err() != nil && !errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
+			break // caller cancelled
+		}
+		var se *StatusError
+		if errors.As(err, &se) && (se.Code == http.StatusUnauthorized || se.Code == http.StatusForbidden) {
+			break
+		}
+	}
+	c.Log.Warn("llm all models failed", "kind", Kind(lastErr), "total_ms", time.Since(start).Milliseconds())
+	return "", lastErr
+}
+
+// tryModel calls one model within budget. If the model spent all tokens
+// "thinking" (empty content, finish_reason=length), it retries once with
+// double max_tokens.
+func (c *Client) tryModel(ctx context.Context, model string, msgs []Message, budget time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	content, finish, err := c.call(ctx, model, msgs, c.MaxTokens)
 	if err == nil && content == "" && finish == "length" {
-		c.Log.Info("llm empty content with finish_reason=length, retrying with more tokens")
-		content, _, err = c.call(ctx, msgs, c.MaxTokens*2)
+		c.Log.Info("llm empty content with finish_reason=length, retrying with more tokens", "model", model)
+		content, _, err = c.call(ctx, model, msgs, c.MaxTokens*2)
 	}
 	if err != nil {
+		if ctx.Err() != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", fmt.Errorf("%w after %s: %w", ErrTimeout, budget.Round(time.Millisecond), err)
+		}
 		return "", err
 	}
 	if content == "" {
@@ -95,8 +172,8 @@ func (c *Client) Complete(ctx context.Context, msgs []Message) (string, error) {
 	return content, nil
 }
 
-func (c *Client) call(ctx context.Context, msgs []Message, maxTokens int) (string, string, error) {
-	body, _ := json.Marshal(chatRequest{Model: c.Model, Messages: msgs, MaxTokens: maxTokens, Fallbacks: c.Fallbacks})
+func (c *Client) call(ctx context.Context, model string, msgs []Message, maxTokens int) (string, string, error) {
+	body, _ := json.Marshal(chatRequest{Model: model, Messages: msgs, MaxTokens: maxTokens})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return "", "", err
@@ -111,7 +188,7 @@ func (c *Client) call(ctx context.Context, msgs []Message, maxTokens int) (strin
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 8192))
-		c.Log.Warn("llm call failed", "status", resp.StatusCode, "ms", time.Since(start).Milliseconds())
+		c.Log.Warn("llm call failed", "model", model, "status", resp.StatusCode, "ms", time.Since(start).Milliseconds())
 		return "", "", &StatusError{Code: resp.StatusCode}
 	}
 	var out chatResponse

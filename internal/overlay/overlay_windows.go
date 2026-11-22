@@ -15,6 +15,7 @@ import (
 	"golang.org/x/image/font"
 	"golang.org/x/sys/windows"
 
+	"github.com/ardwiinoo/tunas/internal/agent"
 	"github.com/ardwiinoo/tunas/internal/config"
 	"github.com/ardwiinoo/tunas/internal/forms"
 )
@@ -152,7 +153,7 @@ type Overlay struct {
 	renderer Renderer
 
 	formCh  chan forms.Output
-	replyCh chan string
+	replyCh chan chatResult
 
 	// UI-thread state
 	ctx       context.Context
@@ -184,12 +185,19 @@ func New(cfg config.AgentOverlay, chat ChatFunc, log *slog.Logger) (*Overlay, er
 	}
 	return &Overlay{
 		cfg: cfg, log: log, chat: chat, renderer: Procedural{},
-		formCh: make(chan forms.Output, 8), replyCh: make(chan string, 2),
+		formCh: make(chan forms.Output, 8), replyCh: make(chan chatResult, 1),
 		measure: Measurer(mf), scale: 1,
 	}, nil
 }
 
+// chatResult is the outcome of one chat call.
+type chatResult struct {
+	reply string
+	fail  agent.ChatFail // "" on success
+}
+
 const (
+	chatTimeout  = 25 * time.Second // the server gives up on the LLM after ~20 s
 	fontSize     = 14
 	visibleTick  = 66  // ms (~15 fps; slow animations do not need more)
 	hiddenTick   = 200 // ms (5 ticks/s, nothing drawn)
@@ -318,21 +326,29 @@ func (o *Overlay) onChar(u uint16, now time.Time) {
 	o.sync(now)
 }
 
+// ask runs one chat call off the UI thread. The presenter locks input while
+// waiting, so at most one call is in flight.
 func (o *Overlay) ask(text string, f forms.Form) {
-	ctx, cancel := context.WithTimeout(o.ctx, 60*time.Second)
+	ctx, cancel := context.WithTimeout(o.ctx, chatTimeout)
 	defer cancel()
+	start := time.Now()
 	reply, err := o.chat(ctx, text, f)
+	res := chatResult{reply: reply}
 	if err != nil {
-		o.log.Warn("chat failed", "err", err)
-		reply = "Maaf, aku tidak bisa menghubungi server sekarang."
+		res.fail = agent.ClassifyChatError(err)
+		// the token is only ever in a request header, never in err
+		o.log.Warn("chat failed", "kind", string(res.fail), "err", err.Error(), "ms", time.Since(start).Milliseconds())
+	} else {
+		o.log.Info("chat ok", "ms", time.Since(start).Milliseconds())
 	}
 	select {
-	case o.replyCh <- reply:
-	default:
+	case o.replyCh <- res:
+	case <-o.ctx.Done():
 	}
 }
 
 func (o *Overlay) tick(now time.Time) {
+	wasTyping := o.p.Typing()
 	for drained := false; !drained; {
 		select {
 		case out := <-o.formCh:
@@ -344,12 +360,19 @@ func (o *Overlay) tick(now time.Time) {
 			}
 			o.p.OnForm(out, now)
 		case r := <-o.replyCh:
-			o.p.OnReply(r, now)
+			if r.fail != "" {
+				o.p.OnChatFailed(FailText(r.fail), now)
+			} else {
+				o.p.OnReply(r.reply, now)
+			}
 		default:
 			drained = true
 		}
 	}
 	o.p.Tick(now)
+	if o.p.Typing() && !wasTyping { // failed: the text box is back for a retry
+		pSetForegroundWindow.Call(o.hwnd) //nolint:errcheck
+	}
 	o.sync(now)
 }
 
@@ -444,7 +467,11 @@ func (o *Overlay) render(now time.Time) {
 	if d := now.Sub(o.motionAt).Seconds(); d < 1 {
 		motion = 1 - d
 	}
-	Frame(o.canvas, o.renderer, o.scene, o.p.Form, o.face, now.Sub(o.formStart).Seconds(), motion, o.scale)
+	sc := o.scene
+	sc.Lines = WithDots(sc.Lines, o.p.Dots(now))
+	a := Anim{T: now.Sub(o.formStart).Seconds(), Motion: motion,
+		Thinking: o.p.Waiting(), Think: o.p.WaitingFor(now).Seconds()}
+	Frame(o.canvas, o.renderer, sc, o.p.Form, o.face, a, o.scale)
 	o.present()
 }
 

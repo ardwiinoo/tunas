@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/ardwiinoo/tunas/internal/llm"
 	"github.com/ardwiinoo/tunas/internal/store"
 )
 
@@ -213,5 +214,12 @@ func (s *Server) postChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid text")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"reply": s.chat(r.Context(), req.Form, req.Text)})
+	reply, err := s.chat(r.Context(), req.Form, req.Text)
+	if err != nil {
+		// 503 with a machine-readable reason so the overlay can say why
+		// (quota used up, LLM too slow, LLM failing).
+		writeError(w, http.StatusServiceUnavailable, llm.Kind(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"reply": reply})
 }

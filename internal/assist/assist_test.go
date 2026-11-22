@@ -163,11 +163,11 @@ func TestModelTimeIsValidatedByCode(t *testing.T) {
 
 func TestLLMUnavailableFallsBack(t *testing.T) {
 	a, _, _ := setup(t, &fakeLLM{err: &llm.StatusError{Code: 429}})
-	if r := a.HandleText(context.Background(), "halo"); r.Text != fallbackNoLLM {
+	if r := a.HandleText(context.Background(), "halo"); r.Text != msgLLMFailed {
 		t.Fatalf("reply = %q", r.Text)
 	}
 	a2, _, _ := setup(t, llm.Disabled{})
-	if got := a2.Ask(context.Background(), "apa?"); got != fallbackNoLLM {
+	if got := a2.Ask(context.Background(), "apa?"); got != msgLLMDisabled {
 		t.Fatalf("ask = %q", got)
 	}
 }
@@ -182,7 +182,7 @@ func TestDailyCapWithDB(t *testing.T) {
 	if r := a.HandleText(context.Background(), "halo"); r.Text != "Halo juga!" {
 		t.Fatalf("first = %q", r.Text)
 	}
-	if r := a.HandleText(context.Background(), "halo lagi"); r.Text != fallbackNoLLM {
+	if r := a.HandleText(context.Background(), "halo lagi"); r.Text != msgLLMCap {
 		t.Fatalf("over cap = %q", r.Text)
 	}
 	if len(inner.seen) != 2 {

@@ -83,7 +83,7 @@ func (a *Assistant) Ask(ctx context.Context, question string) string {
 	})
 	if err != nil {
 		a.logLLMErr("query", err)
-		return fallbackNoLLM
+		return LLMFailText(err)
 	}
 	tpl, rng, err := ParseQuery(raw)
 	if err != nil {

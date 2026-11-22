@@ -93,6 +93,12 @@ Menunggu pemilik:
 - [x] Endpoint `POST /v1/agent/chat` (klien LLM + persona form aktif)
 - [x] Perbaikan: dua bubble sekaligus. Penyebabnya dua proses agen berjalan bersamaan (masing-masing punya overlay sendiri). Agen kini single instance (named mutex `Local\TunasAgent`; proses kedua keluar dengan kode 1). Pengelola bubble jadi state machine eksplisit (idle/menampilkan/input) dengan antrean: pengingat dan balasan yang datang saat ada bubble penting atau input menunggu giliran (maks 4), obrolan form diganti di tempat atau dibuang. Pengingat yang terpotong `Alt+Space` tampil lagi setelah input ditutup
 - [x] `--debug` membuka jendela konsol sendiri (build GUI `-H=windowsgui` tidak punya konsol); bila agen berhenti karena error, konsol menunggu Enter
+- [x] Status loading di semua jalur chat:
+  - Overlay: "Tunas lagi mikir..." (titik beranimasi, daun bergoyang, input dikunci), berganti "Agak lama, sebentar ya..." setelah 8 detik.
+  - Pesan gagal spesifik (timeout / tidak ada koneksi / jatah LLM habis / LLM bermasalah) dan kotak input dibuka lagi untuk mencoba ulang; tiap kegagalan dicatat di agent.log.
+  - Telegram: "typing" diulang tiap 4 detik; LLM gagal → balasan sesuai sebab (bukan diam).
+  - Server: 9 detik per model lalu fallback, total maks 20 detik, model dan durasi dicatat di log.
+  - Diuji end-to-end lokal dengan gateway palsu: model utama lambat → fallback menjawab dalam 11 detik; semua lambat → "Server lama menjawab" setelah 18 detik; server mati → "Tidak bisa hubungi server"; batas harian → "Jatah LLM hari ini habis".
 
 Gerbang fase:
 - tes tata letak bubble / pemecah teks / presenter / render semua form: lulus (bebas platform, jalan di CI Linux)

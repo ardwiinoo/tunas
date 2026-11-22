@@ -47,7 +47,7 @@ func newClient(t *testing.T, g *gateway) *Client {
 	return New(srv.URL+"/v1/", "vk-test", "p/primary", []string{"f/one", "f/two"}, slog.New(slog.DiscardHandler))
 }
 
-func TestCompleteSendsFallbacksAndAuth(t *testing.T) {
+func TestCompleteAuthAndPrimary(t *testing.T) {
 	g := &gateway{respond: func(int, chatRequest) (int, string) { return 200, ok("  <think>hmm</think> Halo! ", "stop") }}
 	c := newClient(t, g)
 	got, err := c.Complete(context.Background(), []Message{{Role: "user", Content: "hai"}})
@@ -55,8 +55,67 @@ func TestCompleteSendsFallbacksAndAuth(t *testing.T) {
 		t.Fatalf("got %q %v", got, err)
 	}
 	r := g.requests[0]
-	if r.Model != "p/primary" || len(r.Fallbacks) != 2 || r.MaxTokens != 800 || g.auth[0] != "Bearer vk-test" {
+	if len(g.requests) != 1 || r.Model != "p/primary" || r.MaxTokens != 800 || g.auth[0] != "Bearer vk-test" {
 		t.Fatalf("request = %+v auth=%q", r, g.auth[0])
+	}
+}
+
+func TestCompleteFallsBackPerModel(t *testing.T) {
+	// primary errors, first fallback hangs past its budget, second answers
+	g := &gateway{respond: func(_ int, req chatRequest) (int, string) {
+		switch req.Model {
+		case "p/primary":
+			return 502, `{}`
+		case "f/one":
+			time.Sleep(400 * time.Millisecond)
+			return 200, ok("terlambat", "stop")
+		}
+		return 200, ok("dari f/two", "stop")
+	}}
+	c := newClient(t, g)
+	c.PerModel, c.Total = 150*time.Millisecond, 3*time.Second
+	got, err := c.Complete(context.Background(), nil)
+	if err != nil || got != "dari f/two" {
+		t.Fatalf("got %q %v", got, err)
+	}
+	if ms := []string{g.requests[0].Model, g.requests[1].Model, g.requests[2].Model}; ms[0] != "p/primary" || ms[1] != "f/one" || ms[2] != "f/two" {
+		t.Fatalf("order = %v", ms)
+	}
+}
+
+func TestCompleteTotalBudget(t *testing.T) {
+	g := &gateway{respond: func(int, chatRequest) (int, string) {
+		time.Sleep(time.Second)
+		return 200, ok("x", "stop")
+	}}
+	c := newClient(t, g)
+	c.PerModel, c.Total = 300*time.Millisecond, 450*time.Millisecond
+	start := time.Now()
+	_, err := c.Complete(context.Background(), nil)
+	if !errors.Is(err, ErrTimeout) || Kind(err) != KindTimeout {
+		t.Fatalf("err = %v", err)
+	}
+	if el := time.Since(start); el > 900*time.Millisecond {
+		t.Fatalf("took %s, total budget not enforced", el)
+	}
+}
+
+func TestCompleteAuthErrorStops(t *testing.T) {
+	g := &gateway{respond: func(int, chatRequest) (int, string) { return 401, `{}` }}
+	c := newClient(t, g)
+	if _, err := c.Complete(context.Background(), nil); Kind(err) != KindFailed || len(g.requests) != 1 {
+		t.Fatalf("err %v after %d requests", err, len(g.requests))
+	}
+}
+
+func TestKind(t *testing.T) {
+	for err, want := range map[error]string{
+		ErrCap: KindCap, ErrDisabled: KindDisabled, ErrTimeout: KindTimeout,
+		context.DeadlineExceeded: KindTimeout, ErrEmpty: KindFailed, &StatusError{Code: 500}: KindFailed,
+	} {
+		if got := Kind(err); got != want {
+			t.Errorf("Kind(%v) = %s, want %s", err, got, want)
+		}
 	}
 }
 
@@ -75,17 +134,20 @@ func TestCompleteRetriesOnceOnLength(t *testing.T) {
 
 	g2 := &gateway{respond: func(int, chatRequest) (int, string) { return 200, ok("", "length") }}
 	c2 := newClient(t, g2)
-	if _, err := c2.Complete(context.Background(), nil); !errors.Is(err, ErrEmpty) || len(g2.requests) != 2 {
-		t.Fatalf("err %v after %d requests (want exactly one retry)", err, len(g2.requests))
+	// exactly one retry per model, then the next model
+	if _, err := c2.Complete(context.Background(), nil); !errors.Is(err, ErrEmpty) || len(g2.requests) != 6 ||
+		g2.requests[1].Model != "p/primary" || g2.requests[2].Model != "f/one" {
+		t.Fatalf("err %v after %d requests", err, len(g2.requests))
 	}
 }
 
 func TestComplete429NoLoop(t *testing.T) {
+	// each model is tried once, never the same one twice
 	g := &gateway{respond: func(int, chatRequest) (int, string) { return 429, `{"error":"quota"}` }}
 	c := newClient(t, g)
 	_, err := c.Complete(context.Background(), nil)
 	var se *StatusError
-	if !errors.As(err, &se) || se.Code != 429 || len(g.requests) != 1 {
+	if !errors.As(err, &se) || se.Code != 429 || len(g.requests) != 3 {
 		t.Fatalf("err %v, %d requests", err, len(g.requests))
 	}
 }
