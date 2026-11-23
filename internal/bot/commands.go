@@ -49,6 +49,7 @@ const helpText = `Halo, aku Tunas 🌱
 /log [kemarin|YYYY-MM-DD] <teks> — catat worklog
 /cal [YYYY-MM] — kalender worklog (ketuk tanggal untuk lihat/ubah)
 /libur [YYYY-MM-DD] — tandai libur (tanpa pengingat); /kerja [YYYY-MM-DD] — tandai hari kerja
+/worklog [on|off|jam 10:30,13:30,16:30|penutup 17:30] — pengingat worklog
 /status — status agen laptop (online/offline, versi, event tertunda)
 /settings — pengaturan (mis. kabar laptop offline/online)
 /ping — cek hidup

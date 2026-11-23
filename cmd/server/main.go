@@ -30,6 +30,7 @@ import (
 	"github.com/ardwiinoo/tunas/internal/bot"
 	"github.com/ardwiinoo/tunas/internal/config"
 	"github.com/ardwiinoo/tunas/internal/forms"
+	"github.com/ardwiinoo/tunas/internal/holidays"
 	"github.com/ardwiinoo/tunas/internal/llm"
 	"github.com/ardwiinoo/tunas/internal/ops"
 	"github.com/ardwiinoo/tunas/internal/reminders"
@@ -133,6 +134,15 @@ func serve() error {
 		return err
 	}
 	wl := &worklog.Service{DB: db, Loc: cfg.Location, Now: time.Now, Log: log, ChatID: cfg.TelegramOwnerID}
+	rem := &worklog.Reminder{Svc: wl, TG: tgBot}
+	wl.OnSaved = rem.OnSaved
+	wl.ExtraCommand = func(ctx context.Context, cmd, args string) (bot.Reply, bool) {
+		if cmd == "worklog" {
+			return rem.Command(ctx, args), true
+		}
+		return bot.Reply{}, false
+	}
+	wl.ExtraCallback = rem.Callback
 	tgBot.OnCommand = wl.Command
 	tgBot.OnText = func(ctx context.Context, text string) bot.Reply {
 		if r, ok := wl.PendingText(ctx, text); ok { // an answer to a worklog button
@@ -186,6 +196,10 @@ func serve() error {
 	wg.Go(func() { _ = tgBot.Run(ctx) })
 	wg.Go(func() { asst.RunDaily(ctx, tgBot) })
 	wg.Go(func() { monitor.Run(ctx, time.Minute) }) // offline notice ~15 min after the last contact
+	hol := &holidays.Refresher{API: holidays.NewClient(cfg.HolidayAPIBase), DB: db, Now: time.Now, Loc: cfg.Location, Log: log,
+		Notify: func(ctx context.Context, text string) error { return tgBot.NotifyOwner(ctx, text) }}
+	wg.Go(func() { hol.Run(ctx) })
+	wg.Go(func() { rem.Run(ctx) })
 
 	select {
 	case <-ctx.Done():
