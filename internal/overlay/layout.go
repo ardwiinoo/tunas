@@ -80,11 +80,33 @@ const (
 
 // Scene is the computed geometry for one frame.
 type Scene struct {
-	Char   Rect
-	Bubble Rect     // zero W when no bubble
-	Lines  []string // wrapped text
-	TailX  float64  // x of the tail tip (points at the character)
-	Right  bool     // character on the right side of the window
+	Char      Rect
+	Bubble    Rect     // zero W when no bubble
+	Lines     []string // the visible lines (at most MaxLines)
+	All       []string // every wrapped line; longer than MaxLines = scrollable
+	MoreAbove bool     // lines hidden above (draw ↑)
+	MoreBelow bool     // lines hidden below (draw ↓)
+	TailX     float64  // x of the tail tip (points at the character)
+	Right     bool     // character on the right side of the window
+}
+
+// ScrollGutter is the space kept at the right of a scrollable bubble for
+// the ↑/↓ markers.
+const ScrollGutter = 14
+
+// View returns the scene showing lines (a processed copy of All, e.g. with
+// dots or typed out) scrolled up from the bottom by up lines. The bubble
+// keeps its size; MoreAbove/MoreBelow tell what is hidden.
+func (s Scene) View(lines []string, up int) Scene {
+	if len(lines) <= MaxLines {
+		s.Lines, s.MoreAbove, s.MoreBelow = lines, false, false
+		return s
+	}
+	up = min(max(up, 0), len(lines)-MaxLines)
+	start := len(lines) - MaxLines - up
+	s.Lines = lines[start : start+MaxLines]
+	s.MoreAbove, s.MoreBelow = start > 0, up > 0
+	return s
 }
 
 // ComputeScene places the character at the bottom of the window (right or
@@ -101,30 +123,27 @@ func ComputeScene(corner, text string, measure func(string) float64) Scene {
 		return s
 	}
 	lines := Wrap(text, BubbleMaxW-2*BubblePad, measure)
-	if len(lines) > MaxLines {
-		lines = lines[:MaxLines]
-		last := []rune(lines[MaxLines-1])
-		if len(last) > 1 {
-			last = last[:len(last)-1]
-		}
-		lines[MaxLines-1] = string(last) + "…"
+	gutter := 0.0
+	if len(lines) > MaxLines { // scrollable: keep room for the ↑/↓ markers
+		gutter = ScrollGutter
+		lines = Wrap(text, BubbleMaxW-2*BubblePad-gutter, measure)
 	}
 	w := 0.0
 	for _, l := range lines {
 		w = max(w, measure(l))
 	}
-	bw := min(float64(BubbleMaxW), w+2*BubblePad)
+	bw := min(float64(BubbleMaxW), w+2*BubblePad+gutter)
 	bw = max(bw, 48)
-	bh := float64(len(lines))*LineHeight + 2*BubblePad
+	bh := float64(min(len(lines), MaxLines))*LineHeight + 2*BubblePad
 	bx := s.Char.X + s.Char.W - bw // right-aligned with the character
 	if !right {
 		bx = s.Char.X
 	}
 	by := s.Char.Y - TailH - bh - 4 // clear of the upright leaf
 	s.Bubble = Rect{X: bx, Y: max(by, 0), W: bw, H: bh}
-	s.Lines = lines
+	s.All = lines
 	s.TailX = s.Char.X + s.Char.W/2
-	return s
+	return s.View(lines, 0)
 }
 
 // WindowPosition returns the window's top-left on a monitor of size (mw, mh)

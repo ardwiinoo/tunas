@@ -47,8 +47,21 @@ func TestComputeScene(t *testing.T) {
 	if short.Bubble.W >= long.Bubble.W || len(short.Lines) != 1 {
 		t.Fatalf("bubble should fit text: short=%+v long=%+v", short.Bubble, long.Bubble)
 	}
-	if long.Bubble.W > BubbleMaxW || len(long.Lines) != MaxLines || !strings.HasSuffix(long.Lines[MaxLines-1], "…") {
-		t.Fatalf("long bubble = %+v lines=%d", long.Bubble, len(long.Lines))
+	if long.Bubble.W > BubbleMaxW || len(long.Lines) != MaxLines || len(long.All) <= MaxLines || !long.MoreAbove || long.MoreBelow {
+		t.Fatalf("long bubble = %+v lines=%d all=%d", long.Bubble, len(long.Lines), len(long.All))
+	}
+	// nothing is cut: the view shows the end, scrolling reaches the start
+	if long.Lines[MaxLines-1] != long.All[len(long.All)-1] {
+		t.Fatal("default view is the bottom")
+	}
+	top := long.View(long.All, 1000)
+	if top.Lines[0] != long.All[0] || top.MoreAbove || !top.MoreBelow || len(top.Lines) != MaxLines {
+		t.Fatalf("scrolled to the top: %+v", top)
+	}
+	for _, l := range long.All {
+		if mono(l) > BubbleMaxW-2*BubblePad-ScrollGutter {
+			t.Fatalf("line %q runs into the scroll markers", l)
+		}
 	}
 	if long.Bubble.Y < 0 || long.Bubble.Y+long.Bubble.H > long.Char.Y {
 		t.Fatalf("bubble must sit above the character inside the window: %+v", long.Bubble)

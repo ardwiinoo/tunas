@@ -159,6 +159,7 @@ func run(cfgPath string, debug bool) error {
 	ov.CharacterOff = !cfg.Overlay.Enabled
 	ov.Configure(time.Duration(cfg.Loading.SlowAfterSeconds)*time.Second,
 		time.Duration(cfg.Loading.VerySlowAfterSeconds)*time.Second, cfg.Animations, loadingLines(log))
+	ov.SetIdleClose(time.Duration(cfg.Bubble.IdleCloseSeconds) * time.Second)
 	ov.OnPause = a.SetPaused
 	ov.OnQuit = stop
 	ov.LogPath = logPath

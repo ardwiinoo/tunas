@@ -23,7 +23,7 @@ type Server struct {
 	now     func() time.Time
 	mux     *http.ServeMux
 	rl      *rateLimiter
-	chat    func(ctx context.Context, form, text string) (ChatResult, error)
+	chat    func(ctx context.Context, form, text string, history []ChatTurn) (ChatResult, error)
 	confirm func(ctx context.Context, id string, yes bool) string
 }
 
@@ -35,7 +35,7 @@ type Options struct {
 	RatePerMinute, RateBurst int
 	// Chat answers overlay chat (form may be "" for the server's active form).
 	// An error is an LLM failure, reported to the agent as llm.Kind.
-	Chat func(ctx context.Context, form, text string) (ChatResult, error)
+	Chat func(ctx context.Context, form, text string, history []ChatTurn) (ChatResult, error)
 	// Confirm resolves a proposal returned by Chat (ChatResult.ConfirmID).
 	Confirm func(ctx context.Context, id string, yes bool) string
 }

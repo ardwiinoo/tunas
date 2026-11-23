@@ -234,10 +234,20 @@ func (s *Server) postHeartbeat(w http.ResponseWriter, r *http.Request) {
 // MaxChatLen bounds overlay chat input (runes).
 const MaxChatLen = 500
 
+// ChatTurn is one earlier message of the bubble conversation.
+type ChatTurn struct {
+	Role string `json:"role"` // "user" | "assistant"
+	Text string `json:"text"`
+}
+
+// MaxChatHistory bounds the conversation context sent with a message.
+const MaxChatHistory = 6
+
 func (s *Server) postChat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Text string `json:"text"`
-		Form string `json:"form"`
+		Text    string     `json:"text"`
+		Form    string     `json:"form"`
+		History []ChatTurn `json:"history"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -247,7 +257,21 @@ func (s *Server) postChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid text")
 		return
 	}
-	res, err := s.chat(r.Context(), req.Form, req.Text)
+	if len(req.History) > MaxChatHistory {
+		writeError(w, http.StatusBadRequest, "history too long")
+		return
+	}
+	for _, t := range req.History {
+		if (t.Role != "user" && t.Role != "assistant") || t.Text == "" || utf8.RuneCountInString(t.Text) > 2000 {
+			writeError(w, http.StatusBadRequest, "invalid history")
+			return
+		}
+	}
+	res, err := s.chat(r.Context(), req.Form, req.Text, req.History)
+	if r.Context().Err() != nil {
+		s.log.Info("chat cancelled by the agent")
+		return
+	}
 	if err != nil {
 		// 503 with a machine-readable reason so the overlay can say why
 		// (quota used up, LLM too slow, LLM failing).

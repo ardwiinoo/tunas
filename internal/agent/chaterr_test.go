@@ -44,7 +44,7 @@ func TestClassifyChatError(t *testing.T) {
 		"cap": FailCap, "llmslow": FailTimeout, "llm": FailLLM, "auth": FailAuth, "proxy": FailOffline,
 		"blocked": FailBlocked, "quota": FailQuota, "down": FailDown,
 	} {
-		_, err := c.Chat(context.Background(), text, "")
+		_, err := c.Chat(context.Background(), text, "", nil)
 		if got := ClassifyChatError(err); got != want {
 			t.Errorf("%s: %v → %s, want %s", text, err, got, want)
 		}
@@ -52,7 +52,7 @@ func TestClassifyChatError(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if _, err := c.Chat(ctx, "slow", ""); ClassifyChatError(err) != FailTimeout {
+	if _, err := c.Chat(ctx, "slow", "", nil); ClassifyChatError(err) != FailTimeout {
 		t.Errorf("slow: %v", err)
 	}
 
@@ -60,7 +60,7 @@ func TestClassifyChatError(t *testing.T) {
 	l, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := l.Addr().String()
 	l.Close()
-	_, err := NewClient("http://"+addr, "tnd_secret").Chat(context.Background(), "x", "")
+	_, err := NewClient("http://"+addr, "tnd_secret").Chat(context.Background(), "x", "", nil)
 	if ClassifyChatError(err) != FailOffline {
 		t.Errorf("refused: %v", err)
 	}

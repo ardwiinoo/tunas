@@ -23,6 +23,12 @@ type Agent struct {
 	Overlay               AgentOverlay        `yaml:"overlay"`
 	Loading               AgentLoading        `yaml:"loading"`
 	Animations            bool                `yaml:"animations"` // false: static poses, no typing effect
+	Bubble                AgentBubble         `yaml:"bubble"`
+}
+
+// AgentBubble configures the chat bubble.
+type AgentBubble struct {
+	IdleCloseSeconds int `yaml:"idle_close_seconds"` // close an open bubble after this long without activity
 }
 
 // AgentLoading sets when the bubble's waiting texts change.
@@ -82,6 +88,7 @@ func DefaultAgent() *Agent {
 		Overlay:    AgentOverlay{Enabled: true, Corner: "bottom-right", MarginX: 24, MarginY: 24},
 		Loading:    AgentLoading{SlowAfterSeconds: 3, VerySlowAfterSeconds: 8},
 		Animations: true,
+		Bubble:     AgentBubble{IdleCloseSeconds: 60},
 	}
 }
 
@@ -151,6 +158,9 @@ func (c *Agent) Validate() error {
 	}
 	if l := c.Loading; l.SlowAfterSeconds < 1 || l.VerySlowAfterSeconds <= l.SlowAfterSeconds || l.VerySlowAfterSeconds > 30 {
 		errs = append(errs, errors.New("loading: need 1 <= slow_after_seconds < very_slow_after_seconds <= 30"))
+	}
+	if n := c.Bubble.IdleCloseSeconds; n < 10 || n > 600 {
+		errs = append(errs, errors.New("bubble.idle_close_seconds must be 10..600"))
 	}
 	return errors.Join(errs...)
 }

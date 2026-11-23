@@ -140,10 +140,21 @@ type ChatReply struct {
 	ConfirmID string `json:"confirm_id"`
 }
 
-// Chat sends overlay text and returns Tunas's reply.
-func (c *Client) Chat(ctx context.Context, text, form string) (ChatReply, error) {
+// ChatTurn is one earlier message of the bubble conversation.
+type ChatTurn struct {
+	Role string `json:"role"` // "user" | "assistant"
+	Text string `json:"text"`
+}
+
+// Chat sends overlay text (with the conversation so far) and returns
+// Tunas's reply.
+func (c *Client) Chat(ctx context.Context, text, form string, history []ChatTurn) (ChatReply, error) {
 	var out ChatReply
-	err := c.do(ctx, http.MethodPost, "/v1/agent/chat", map[string]string{"text": text, "form": form}, &out)
+	body := map[string]any{"text": text, "form": form}
+	if len(history) > 0 {
+		body["history"] = history
+	}
+	err := c.do(ctx, http.MethodPost, "/v1/agent/chat", body, &out)
 	return out, err
 }
 

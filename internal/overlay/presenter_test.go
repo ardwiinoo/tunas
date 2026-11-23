@@ -32,7 +32,11 @@ func checkOne(t *testing.T, p *Presenter) {
 			t.Fatalf("idle but bubble %q", txt)
 		}
 	case Showing, Reply:
-		if txt == "" || strings.Contains(txt, "›") {
+		if p.Conversing() {
+			if !strings.Contains(txt, "\n› ") || !strings.HasSuffix(txt, Cursor) {
+				t.Fatalf("conversation but bubble %q", txt)
+			}
+		} else if txt == "" || strings.Contains(txt, "›") {
 			t.Fatalf("%s but bubble %q", p.State, txt)
 		}
 	case Input:
@@ -110,8 +114,8 @@ func TestPresenterTyping(t *testing.T) {
 	}
 	p.OnReply("Halo juga!", t0)
 	p.Tick(t0.Add(7 * time.Second))
-	if p.BubbleText() != "Halo juga!" {
-		t.Fatal("reply must replace the thinking bubble and stay a while")
+	if p.BubbleText() != "Halo juga!\n› "+Cursor || !p.Conversing() {
+		t.Fatalf("reply must replace the thinking bubble with the text box under it: %q", p.BubbleText())
 	}
 	p.Dismiss(t0)
 	if p.State != Idle {
@@ -123,9 +127,14 @@ func TestPresenterTyping(t *testing.T) {
 		t.Fatal("empty submit should close")
 	}
 	p.OnHotkey(t0)
-	p.OnHotkey(t0)
+	p.Type([]rune("ab"), t0)
+	p.OnHotkey(t0) // Alt+Space on an open box only focuses it
+	if p.State != Input || p.Draft != "ab" {
+		t.Fatal("second hotkey must keep the text box and its draft")
+	}
+	p.CancelInput(t0) // Esc closes
 	if p.State != Idle {
-		t.Fatal("second hotkey closes the text box")
+		t.Fatal("Esc closes the text box")
 	}
 
 	p.OnHotkey(t0)

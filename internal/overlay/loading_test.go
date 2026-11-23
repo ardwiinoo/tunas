@@ -95,12 +95,17 @@ func TestLoadingStateMachineSuccess(t *testing.T) {
 		t.Fatal("Enter must reach the window to skip the typing")
 	}
 	p.SkipReveal(clk.add(HopFor + 200*time.Millisecond))
-	if p.Revealed(clk.now) != -1 || p.KeysWanted() {
-		t.Fatal("Enter shows everything")
+	if p.Revealed(clk.now) != -1 || !p.Conversing() || p.BubbleText() != answer+"\n› "+Cursor {
+		t.Fatalf("Enter shows everything and the text box: %q", p.BubbleText())
 	}
-	p.Tick(clk.add(replyFor(answer)))
+	// → input: the conversation goes on; closes after IdleClose without activity
+	p.Tick(clk.add(InputTimeout - time.Millisecond))
+	if p.State != Reply {
+		t.Fatal("closed too early")
+	}
+	p.Tick(clk.add(time.Millisecond))
 	if p.State != Idle {
-		t.Fatalf("reply should close after its display time, got %s", p.State)
+		t.Fatalf("reply box should close after IdleClose, got %s", p.State)
 	}
 }
 
@@ -216,7 +221,7 @@ func TestNoAnimations(t *testing.T) {
 		t.Fatal("dots must not animate")
 	}
 	p.OnReply("jawaban", t0)
-	if p.Revealed(t0) != -1 || p.Look(t0).Hop != 0 || p.Look(t0).Form != forms.Fokus || p.KeysWanted() {
+	if p.Revealed(t0) != -1 || p.Look(t0).Hop != 0 || p.Look(t0).Form != forms.Fokus || !p.Conversing() {
 		t.Fatal("no hop and no typing effect without animations")
 	}
 }

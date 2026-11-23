@@ -310,5 +310,13 @@ func Frame(c *Canvas, r Renderer, sc Scene, f forms.Form, face font.Face, a Anim
 		for i, line := range sc.Lines {
 			c.Text(face, line, (sc.Bubble.X+BubblePad)*s, (sc.Bubble.Y+BubblePad+float64(i)*LineHeight+1)*s, ColBubbleInk)
 		}
+		// scroll markers in the right gutter (↑/↓, PageUp/PageDown or the wheel)
+		mx := (sc.Bubble.X + sc.Bubble.W - BubblePad - ScrollGutter + 4) * s
+		if sc.MoreAbove {
+			c.Text(face, "↑", mx, (sc.Bubble.Y+BubblePad+1)*s, ColLine)
+		}
+		if sc.MoreBelow {
+			c.Text(face, "↓", mx, (sc.Bubble.Y+BubblePad+float64(len(sc.Lines)-1)*LineHeight+1)*s, ColLine)
+		}
 	}
 }

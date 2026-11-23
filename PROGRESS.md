@@ -143,3 +143,26 @@ Gerbang fase:
 
 Menunggu pemilik:
 - `TAVILY_API_KEY` (DEPLOY.md bagian 14), cron backup + uji restore di VPS (bagian 13), dan semua langkah deploy sebelumnya.
+
+## Fase 5b: Penyempurnaan dari pemakaian nyata [x] (kode selesai; penerimaan di produksi menunggu deploy)
+Sebagian besar butir dikerjakan lebih dulu atas permintaan langsung (PR #2 sampai #7). Sisanya di branch `phase-5b-polish`.
+- [x] Rantai fallback LLM: kegagalan apa pun per model lanjut ke model berikutnya; 9 dtk per model, total 20 dtk; log tiap percobaan; pesan dibedakan (diblokir/kuota/provider down/timeout); peringatan Telegram untuk model diblokir (cooldown 1 jam). (PR #3, #5)
+- [x] Bubble memakai pipeline Telegram: klasifikasi maksud, templat query tetap, konfirmasi Enter/Esc, guardrail, penolakan angka karangan. (PR #6)
+- [x] Konteks percakapan: 6 pesan terakhir dikirim bersama pesan bubble (`history`), direset bila bubble tertutup > 5 menit; dipakai di jalur obrolan.
+- [x] Bubble:
+  - Setelah jawaban, kotak input muncul di bawahnya (lanjut ngobrol).
+  - `Esc` menutup; `Alt+Space` saat bubble terbuka hanya memfokuskan input (tidak lagi menutup).
+  - Tutup otomatis setelah `bubble.idle_close_seconds` (default 60) tanpa aktivitas.
+  - Satu bubble aktif.
+  - Teks panjang tidak lagi dipotong "…": bisa di-scroll dengan ↑/↓, PageUp/PageDown, atau roda mouse, dengan penanda ↑/↓ di tepi kanan.
+- [x] State loading (form `mikir`) dengan pembatalan lewat `context`. Pembatalan oleh pemilik dicatat INFO di agen dan server (bukan WARN). (PR #7 + branch ini)
+- [x] Visibilitas agen: heartbeat, `/status`, kabar offline/online, sambung ulang otomatis, event tertunda berurutan. (PR #4)
+- [x] Agen satu instans, `--debug` membuka konsol, kegagalan chat/long-poll tercatat tanpa token. (PR #2, #3)
+
+Gerbang fase:
+- tes klien LLM palsu (403 → 429 → sukses): lulus
+- tes state machine bubble dengan jam palsu (idle → input → mikir → lama → sangat lama → berhasil → input → mikir → gagal → input → tutup): lulus
+- tes pipeline chat (cocok dengan `/today`, angka karangan ditolak, "ingatkan aku..." membuat baris setelah konfirmasi): lulus
+- ukur memori agen: working set 28,7 MB, CPU tersembunyi ≈ 0% (diukur saat PR #7)
+
+Menunggu pemilik: penerimaan di produksi (jawaban < 5 dtk dengan model cepat, primary diblokir tetap dijawab fallback, `/status` setelah sleep 5 menit).

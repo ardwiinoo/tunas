@@ -41,7 +41,7 @@ func TestBubbleDataQuestionMatchesToday(t *testing.T) {
 	a, db, now := setup(t, llmFake)
 	seedActivity(t, db, time.Date(2026, 11, 23, 8, 0, 0, 0, jkt))
 
-	r, err := a.Handle(context.Background(), forms.Biasa, "hari ini aku paling lama pakai apa?")
+	r, err := a.Handle(context.Background(), forms.Biasa, "hari ini aku paling lama pakai apa?", nil)
 	if err != nil || ConfirmID(r) != "" {
 		t.Fatalf("reply %+v err %v", r, err)
 	}
@@ -67,7 +67,7 @@ func TestBubbleInventedNumbersRejected(t *testing.T) {
 	a, db, _ := setup(t, llmFake)
 	seedActivity(t, db, time.Date(2026, 11, 23, 8, 0, 0, 0, jkt))
 
-	r, err := a.Handle(context.Background(), forms.Biasa, "hari ini berapa lama aku aktif?")
+	r, err := a.Handle(context.Background(), forms.Biasa, "hari ini berapa lama aku aktif?", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestBubbleInventedNumbersRejected(t *testing.T) {
 
 	// numbers that are in the facts pass untouched
 	llmFake.answer = func(string) string { return "Total aktifmu hari ini 1 j 50 m." }
-	if r, _ := a.Handle(context.Background(), forms.Biasa, "berapa lama?"); r.Text != "Total aktifmu hari ini 1 j 50 m." {
+	if r, _ := a.Handle(context.Background(), forms.Biasa, "berapa lama?", nil); r.Text != "Total aktifmu hari ini 1 j 50 m." {
 		t.Fatalf("faithful answer replaced: %q", r.Text)
 	}
 }
@@ -105,7 +105,7 @@ func TestBubbleReminderCreatesRowAfterConfirm(t *testing.T) {
 	a, db, _ := setup(t, f)
 	ctx := context.Background()
 
-	r, err := a.Handle(ctx, forms.Fokus, "ingatkan aku jam 5 sore minum obat")
+	r, err := a.Handle(ctx, forms.Fokus, "ingatkan aku jam 5 sore minum obat", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestBubbleReminderCreatesRowAfterConfirm(t *testing.T) {
 	}
 
 	// Esc = Batal: nothing saved
-	r, _ = a.Handle(ctx, forms.Biasa, "catat tugas kirim laporan")
+	r, _ = a.Handle(ctx, forms.Biasa, "catat tugas kirim laporan", nil)
 	if got := a.Confirm(ctx, ConfirmID(r), false); got != "Oke, dibatalkan." {
 		t.Fatalf("cancel = %q", got)
 	}
@@ -142,7 +142,7 @@ func TestBubbleReminderCreatesRowAfterConfirm(t *testing.T) {
 func TestChatGuardrail(t *testing.T) {
 	f := &fakeLLM{replies: []string{`{"intent":"chat"}`, "Halo!"}}
 	a, _, _ := setup(t, f)
-	if _, err := a.Handle(context.Background(), forms.Biasa, "halo"); err != nil {
+	if _, err := a.Handle(context.Background(), forms.Biasa, "halo", nil); err != nil {
 		t.Fatal(err)
 	}
 	sys := f.seen[1][0].Content
@@ -150,5 +150,21 @@ func TestChatGuardrail(t *testing.T) {
 		if !strings.Contains(sys, want) {
 			t.Errorf("chat system prompt lacks %q", want)
 		}
+	}
+}
+
+// The bubble's recent turns reach the chat call, between the system
+// prompt and the new message.
+func TestChatUsesHistory(t *testing.T) {
+	f := &fakeLLM{replies: []string{`{"intent":"chat"}`, "Masih ingat kok!"}}
+	a, _, _ := setup(t, f)
+	hist := []llm.Message{{Role: "user", Content: "namaku Budi"}, {Role: "assistant", Content: "Halo Budi!"}}
+	r, err := a.Handle(context.Background(), forms.Biasa, "siapa namaku?", hist)
+	if err != nil || r.Text != "Masih ingat kok!" {
+		t.Fatalf("reply %+v %v", r, err)
+	}
+	msgs := f.seen[1]
+	if len(msgs) != 4 || msgs[1].Content != "namaku Budi" || msgs[2].Role != "assistant" || msgs[3].Content != "siapa namaku?" {
+		t.Fatalf("chat messages = %+v", msgs)
 	}
 }

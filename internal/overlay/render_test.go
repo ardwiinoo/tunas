@@ -88,7 +88,7 @@ func TestFixedTextsHaveGlyphs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	texts := []string{Cursor, "› ", "…", ConfirmHint, CancelHint, TextCancelled}
+	texts := []string{Cursor, "› ", "…", "↑", "↓", ConfirmHint, CancelHint, TextCancelled}
 	ms, err := modes.Load()
 	if err != nil {
 		t.Fatal(err)
