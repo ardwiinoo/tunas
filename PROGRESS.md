@@ -166,3 +166,19 @@ Gerbang fase:
 - ukur memori agen: working set 28,7 MB, CPU tersembunyi ≈ 0% (diukur saat PR #7)
 
 Menunggu pemilik: penerimaan di produksi (jawaban < 5 dtk dengan model cepat, primary diblokir tetap dijawab fallback, `/status` setelah sleep 5 menit).
+
+## Fase 7: Worklog
+### Fase 7a: Dasar worklog dan kalender Telegram [x] (kode selesai; penerimaan di produksi menunggu deploy)
+- [x] Migrasi `0003_worklog.sql` (PRD 5.1; nomor 0003 karena 0002 sudah dipakai status agen), plus kolom `client_id` unik untuk kiriman agen yang idempoten (7d).
+- [x] `internal/worklog`: parse/render format berkas bulanan aplikasi lama (`YYYYMM_daily.txt`, header `DD/MM/YYYY`, `* teks`, satu baris kosong antarhari), aturan hari kerja (akhir pekan, libur nasional, cuti bersama tetap hari kerja, override menang), penghitung kelengkapan, pembangun kalender dan keyboard.
+- [x] `/log [kemarin|YYYY-MM-DD] teks` (masa depan ditolak, > 2000 karakter ditolak, baris baru jadi spasi) dengan tombol ↩️ Batalkan / ➕ Tambah lagi.
+- [x] `/cal [YYYY-MM]`: satu pesan yang diedit di tempat (◀ ▶), tanggal bisa diketuk → isi hari itu dengan ✏️ Edit / 🗑 Hapus (konfirmasi) / ➕ Tambah / ◀ Kembali; edit dan tambah lewat `bot_pending` (berlaku 30 menit, ada ❌ Batal).
+- [x] `/libur [YYYY-MM-DD] [catatan]`, `/kerja [YYYY-MM-DD]`, `/libur hapus YYYY-MM-DD`.
+
+Gerbang fase:
+- tes tabel aturan hari kerja, parser tanggal (`kemarin`/`YYYY-MM-DD`/`DD/MM/YYYY`/lewat tengah malam), pembangun keyboard, `callback_data` ≤ 64 byte: lulus
+- golden test Parse → Render byte-identik (fixture sintetis, termasuk urutan hari tidak kronologis): lulus
+- tes integrasi DB (simpan, kalender ✅, lihat hari, edit, tambah, hapus dengan konfirmasi, batalkan, pending kedaluwarsa, override, urutan berkas): lulus
+- owner-only pada callback: lulus (`IsOwner` menolak callback akun lain)
+
+Menunggu pemilik: penerimaan di produksi (`/log tes`, `/cal` menampilkan ✅ hari ini, ketuk/edit/hapus, akun lain diabaikan).

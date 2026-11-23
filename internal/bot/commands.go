@@ -46,6 +46,9 @@ const helpText = `Halo, aku Tunas 🌱
 /form <id>|auto — atur form (biasa, fokus, tidur, senang, ingat, tegur)
 /cari <kueri> — cari di web (dengan sumber)
 /export — unduh semua data (JSON.gz)
+/log [kemarin|YYYY-MM-DD] <teks> — catat worklog
+/cal [YYYY-MM] — kalender worklog (ketuk tanggal untuk lihat/ubah)
+/libur [YYYY-MM-DD] — tandai libur (tanpa pengingat); /kerja [YYYY-MM-DD] — tandai hari kerja
 /status — status agen laptop (online/offline, versi, event tertunda)
 /settings — pengaturan (mis. kabar laptop offline/online)
 /ping — cek hidup

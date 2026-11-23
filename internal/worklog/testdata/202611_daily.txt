@@ -1,0 +1,14 @@
+02/11/2026
+* menyiapkan lingkungan uji
+* membaca dokumentasi API kalender
+
+03/11/2026
+* rapat perencanaan sprint
+
+05/11/2026
+* merapikan skrip deploy
+* menulis tes integrasi
+* review PR teman
+
+04/11/2026
+* susulan: catatan hari Rabu yang ditulis belakangan
