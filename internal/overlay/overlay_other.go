@@ -46,3 +46,12 @@ func (*Overlay) Notify(forms.Output) {}
 
 // Run does nothing.
 func (*Overlay) Run(context.Context) error { return nil }
+
+// SetTray does nothing.
+func (*Overlay) SetTray(TrayOptions) {}
+
+// WorklogEvent does nothing.
+func (*Overlay) WorklogEvent(agent.WorklogEvent) {}
+
+// SetWorklogQueue does nothing.
+func (*Overlay) SetWorklogQueue(int) {}

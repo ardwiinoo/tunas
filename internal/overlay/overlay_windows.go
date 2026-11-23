@@ -194,6 +194,13 @@ type Overlay struct {
 	reqCancel context.CancelFunc // cancels the in-flight chat/confirm (Esc)
 	visibleMs uintptr            // timer period while visible
 
+	// tray and worklog
+	tray       TrayOptions
+	charHidden bool // tray "Sembunyikan karakter": no unasked bubbles
+	wlCh       chan agent.WorklogEvent
+	wlResCh    chan worklogResult
+	wlQueue    atomic.Int32
+
 	// tray (UI thread)
 	paused     bool
 	trayIcon   uintptr
@@ -215,6 +222,7 @@ func New(cfg config.AgentOverlay, chat ChatAPI, log *slog.Logger) (*Overlay, err
 	return &Overlay{
 		cfg: cfg, log: log, chat: chat, renderer: Procedural{},
 		formCh: make(chan forms.Output, 8), replyCh: make(chan chatResult, 1),
+		wlCh: make(chan agent.WorklogEvent, 4), wlResCh: make(chan worklogResult, 1),
 		measure: Measurer(mf), scale: 1, visibleMs: visibleTick,
 	}, nil
 }
@@ -304,6 +312,7 @@ func (o *Overlay) Run(ctx context.Context) error {
 		defer pUnregisterHotKey.Call(hwnd, hotkeyID) //nolint:errcheck
 	}
 	pSetTimer.Call(hwnd, timerID, hiddenTick, 0) //nolint:errcheck
+	o.offerAutostart(time.Now())
 
 	go func() {
 		<-ctx.Done()
@@ -367,7 +376,11 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 			return 0
 		}
 	case wmLButtonDown:
-		o.p.Dismiss(now)
+		if o.p.FocusWorklog(now) { // a click answers the worklog bubble: keys work now
+			pSetForegroundWindow.Call(hwnd) //nolint:errcheck
+		} else {
+			o.p.Dismiss(now)
+		}
 		o.sync(now)
 		return 0
 	case wmMouseActivate:
@@ -395,6 +408,15 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 }
 
 func (o *Overlay) onChar(u uint16, now time.Time) {
+	if o.worklogChar(u, now) {
+		o.sync(now)
+		return
+	}
+	if o.p.State == Confirm && o.isLocal() && (u == 0x0D || u == 0x1B) {
+		o.localConfirm(u == 0x0D, now)
+		o.sync(now)
+		return
+	}
 	switch {
 	case o.p.Waiting():
 		if u == 0x1B && o.p.CancelWait(now) { // Esc: give up on the request
@@ -519,6 +541,9 @@ func (o *Overlay) tick(now time.Time) {
 			if out.Motion {
 				o.motionAt = now
 			}
+			if o.charHidden {
+				out.Speech = "" // hidden: the pose follows, but no unasked bubble
+			}
 			o.p.OnForm(out, now)
 		case r := <-o.replyCh:
 			if r.req != o.p.Req() {
@@ -537,6 +562,7 @@ func (o *Overlay) tick(now time.Time) {
 			drained = true
 		}
 	}
+	o.drainWorklog(now)
 	o.trayTick()
 	o.p.Tick(now)
 	if o.p.KeysWanted() && !wasKeys { // a proposal, or the text box back after a failure

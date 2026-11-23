@@ -37,6 +37,13 @@ create table if not exists buckets (
   primary key (bucket_start, app)
 );
 create table if not exists kv (key text primary key, value text not null);
+create table if not exists worklog_queue (   -- worklog entries written on the laptop, until the server confirms
+  client_id text primary key,                -- UUID: resending is harmless (server is idempotent)
+  entry_date text not null,                  -- YYYY-MM-DD, the local day it was written
+  text text not null,
+  prompt_id integer not null default 0,
+  created_at integer not null                -- unix seconds
+);
 `
 
 // OpenBuffer opens (or creates) the buffer database.
@@ -139,5 +146,47 @@ func (b *Buffer) GetKV(ctx context.Context, key string) (string, error) {
 func (b *Buffer) SetKV(ctx context.Context, key, value string) error {
 	_, err := b.db.ExecContext(ctx,
 		`insert into kv(key, value) values(?, ?) on conflict(key) do update set value=excluded.value`, key, value)
+	return err
+}
+
+// WorklogItem is a worklog entry waiting to reach the server.
+type WorklogItem struct {
+	ClientID  string    `json:"client_id"`
+	Date      string    `json:"date"`
+	Text      string    `json:"text"`
+	PromptID  int64     `json:"prompt_id,omitempty"`
+	CreatedAt time.Time `json:"-"` // local only
+}
+
+// QueueWorklog stores an entry before it is sent.
+func (b *Buffer) QueueWorklog(ctx context.Context, it WorklogItem) error {
+	_, err := b.db.ExecContext(ctx, `insert or ignore into worklog_queue(client_id, entry_date, text, prompt_id, created_at)
+		values(?, ?, ?, ?, ?)`, it.ClientID, it.Date, it.Text, it.PromptID, it.CreatedAt.Unix())
+	return err
+}
+
+// PendingWorklog lists queued entries, oldest first.
+func (b *Buffer) PendingWorklog(ctx context.Context) ([]WorklogItem, error) {
+	rows, err := b.db.QueryContext(ctx, `select client_id, entry_date, text, prompt_id, created_at from worklog_queue order by created_at, rowid`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []WorklogItem
+	for rows.Next() {
+		var it WorklogItem
+		var ts int64
+		if err := rows.Scan(&it.ClientID, &it.Date, &it.Text, &it.PromptID, &ts); err != nil {
+			return nil, err
+		}
+		it.CreatedAt = time.Unix(ts, 0)
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// DoneWorklog removes an entry the server confirmed (or rejected for good).
+func (b *Buffer) DoneWorklog(ctx context.Context, clientID string) error {
+	_, err := b.db.ExecContext(ctx, `delete from worklog_queue where client_id = ?`, clientID)
 	return err
 }

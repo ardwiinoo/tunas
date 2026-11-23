@@ -25,6 +25,7 @@ type Server struct {
 	rl      *rateLimiter
 	chat    func(ctx context.Context, form, text string, history []ChatTurn) (ChatResult, error)
 	confirm func(ctx context.Context, id string, yes bool) string
+	worklog Worklog
 }
 
 // Options configures the API.
@@ -38,6 +39,8 @@ type Options struct {
 	Chat func(ctx context.Context, form, text string, history []ChatTurn) (ChatResult, error)
 	// Confirm resolves a proposal returned by Chat (ChatResult.ConfirmID).
 	Confirm func(ctx context.Context, id string, yes bool) string
+	// Worklog serves the agent's worklog endpoints (Phase 7). Optional.
+	Worklog Worklog
 }
 
 // New builds the HTTP handler.
@@ -49,7 +52,7 @@ func New(log *slog.Logger, o Options) *Server {
 		o.RatePerMinute, o.RateBurst = 120, 30
 	}
 	s := &Server{log: log, db: o.DB, now: o.Now, mux: http.NewServeMux(),
-		rl: newRateLimiter(o.RatePerMinute, o.RateBurst, o.Now), chat: o.Chat, confirm: o.Confirm}
+		rl: newRateLimiter(o.RatePerMinute, o.RateBurst, o.Now), chat: o.Chat, confirm: o.Confirm, worklog: o.Worklog}
 	s.mux.HandleFunc("GET /healthz", s.healthz)
 	s.routes()
 	return s
@@ -70,6 +73,7 @@ func (s *Server) routes() {
 	v1 := http.NewServeMux()
 	s.mux.Handle("/v1/", s.rl.middleware(v1))
 	s.registerAgentRoutes(v1)
+	s.registerWorklogRoutes(v1)
 }
 
 // healthz reports "ok" when the server (and its database, if configured) works.

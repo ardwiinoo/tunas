@@ -201,6 +201,7 @@ func serve() error {
 				return api.ChatResult{Reply: r.Text, ConfirmID: assist.ConfirmID(r)}, err
 			},
 			Confirm: asst.Confirm,
+			Worklog: worklogAPI{svc: wl, rem: rem},
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
@@ -420,4 +421,39 @@ func cutPrefixFold(s, prefix string) (string, bool) {
 		return s[len(prefix):], true
 	}
 	return s, false
+}
+
+// worklogAPI adapts the worklog service to the agent API (PRD 6.10).
+type worklogAPI struct {
+	svc *worklog.Service
+	rem *worklog.Reminder
+}
+
+func (w worklogAPI) Save(ctx context.Context, date, text, clientID string, promptID int64) (api.WorklogSaved, error) {
+	r, err := w.svc.SaveFromAgent(ctx, date, text, clientID, promptID)
+	var bad *worklog.InputError
+	if errors.As(err, &bad) {
+		return api.WorklogSaved{}, &api.WorklogInputError{Reason: bad.Reason}
+	}
+	if err != nil {
+		return api.WorklogSaved{}, err
+	}
+	return api.WorklogSaved{ID: r.ID, Count: r.Count, Duplicate: r.Duplicate}, nil
+}
+
+func (w worklogAPI) Today(ctx context.Context) (api.WorklogToday, error) {
+	n, last, workday, err := w.svc.AgentToday(ctx)
+	out := api.WorklogToday{Count: n, IsWorkday: workday}
+	if !last.IsZero() {
+		out.LastAt = &last
+	}
+	return out, err
+}
+
+func (w worklogAPI) Answer(ctx context.Context, promptID int64, action string) error {
+	_, err := w.rem.Answer(ctx, promptID, action, "agent")
+	if errors.Is(err, worklog.ErrPromptClosed) {
+		return api.ErrPromptClosed
+	}
+	return err
 }

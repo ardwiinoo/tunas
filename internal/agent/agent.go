@@ -45,6 +45,10 @@ type Agent struct {
 	Version string
 	// RetryBase is the first retry delay of the event loop (default 5s).
 	RetryBase time.Duration
+	// OnWorklogQueue reports how many worklog entries wait to be sent (tray).
+	OnWorklogQueue func(n int)
+	// OnWorklog receives worklog.due / worklog.closed events (bubble).
+	OnWorklog func(e WorklogEvent)
 
 	machine *forms.Machine
 	streak  forms.Streak
@@ -59,6 +63,20 @@ type Agent struct {
 	doneAt    time.Time
 	conn      ConnState
 	paused    bool
+
+	worklogKick chan struct{}
+	lastIdle    time.Duration // idle time at the last sample
+	lastSync    time.Time     // last successful upload (tray status)
+}
+
+// WorklogEvent is a worklog reminder event from the server.
+type WorklogEvent struct {
+	Type     string // "worklog.due" | "worklog.closed"
+	PromptID int64
+	Slot     string
+	Count    int
+	Via      string
+	Age      time.Duration
 }
 
 // FormsConfig converts YAML thresholds to forms.Config.
@@ -86,6 +104,9 @@ func (a *Agent) init() {
 	if a.RetryBase <= 0 {
 		a.RetryBase = 5 * time.Second
 	}
+	if a.worklogKick == nil {
+		a.worklogKick = make(chan struct{}, 1)
+	}
 }
 
 // Run blocks until ctx is cancelled.
@@ -95,6 +116,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	wg.Go(func() { a.syncLoop(ctx) })
 	wg.Go(func() { a.eventLoop(ctx) })
 	wg.Go(func() { a.heartbeatLoop(ctx) })
+	wg.Go(func() { a.worklogLoop(ctx) })
+	a.queueChanged(ctx)
 
 	interval := time.Duration(a.Cfg.SampleIntervalSeconds) * time.Second
 	t := time.NewTicker(interval)
@@ -130,6 +153,9 @@ func (a *Agent) SampleOnce(ctx context.Context, interval time.Duration) error {
 	}
 	idle := s.Idle >= time.Duration(a.Cfg.IdleThresholdSeconds)*time.Second
 	cat := "other"
+	a.mu.Lock()
+	a.lastIdle = s.Idle
+	a.mu.Unlock()
 	if s.App != "" && !a.Paused() {
 		cat = a.Cfg.CategoryOf(s.App)
 		secs := int(interval.Seconds())
@@ -219,6 +245,9 @@ func (a *Agent) syncLoop(ctx context.Context) {
 		if failures > 0 {
 			a.Log.Info("sync recovered", "uploaded", n)
 		}
+		a.mu.Lock()
+		a.lastSync = a.Now()
+		a.mu.Unlock()
 		failures, wait = 0, base
 		a.Log.Debug("synced", "uploaded", n)
 	}
@@ -282,6 +311,7 @@ func (a *Agent) eventLoop(ctx context.Context) {
 		}
 		failures = 0
 		a.setConn(ConnOnline)
+		a.kickWorklog() // back online: send what was written offline
 
 		for first := true; ctx.Err() == nil; first = false {
 			evs, err := a.API.Events(ctx, after, eventWait)
@@ -357,6 +387,19 @@ func (a *Agent) HandleEvent(e Event) {
 		}
 	case "task.created":
 		a.Log.Info("event task.created", "id", e.ID)
+	case "worklog.due", "worklog.closed":
+		var w struct {
+			PromptID int64  `json:"prompt_id"`
+			Slot     string `json:"slot"`
+			Count    int    `json:"count_today"`
+			Via      string `json:"via"`
+		}
+		_ = json.Unmarshal(e.Payload, &w)
+		a.Log.Info("event "+e.Type, "id", e.ID, "prompt", w.PromptID, "age", age.Round(time.Second).String())
+		if cb := a.OnWorklog; cb != nil {
+			ev := WorklogEvent{Type: e.Type, PromptID: w.PromptID, Slot: w.Slot, Count: w.Count, Via: w.Via, Age: age}
+			go cb(ev) // never block event handling (it holds a.mu)
+		}
 	case "form.set":
 		a.Log.Info("event form.set", "id", e.ID, "form", p.Form)
 		if p.Form == "" || p.Form == "auto" {
