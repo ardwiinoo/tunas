@@ -35,6 +35,7 @@ import (
 	"github.com/ardwiinoo/tunas/internal/reminders"
 	"github.com/ardwiinoo/tunas/internal/search"
 	"github.com/ardwiinoo/tunas/internal/store"
+	"github.com/ardwiinoo/tunas/internal/worklog"
 	"github.com/ardwiinoo/tunas/modes"
 )
 
@@ -131,8 +132,20 @@ func serve() error {
 	if err != nil {
 		return err
 	}
-	tgBot.OnText = asst.HandleText
-	tgBot.OnCallback = asst.HandleCallback
+	wl := &worklog.Service{DB: db, Loc: cfg.Location, Now: time.Now, Log: log, ChatID: cfg.TelegramOwnerID}
+	tgBot.OnCommand = wl.Command
+	tgBot.OnText = func(ctx context.Context, text string) bot.Reply {
+		if r, ok := wl.PendingText(ctx, text); ok { // an answer to a worklog button
+			return r
+		}
+		return asst.HandleText(ctx, text)
+	}
+	tgBot.OnCallback = func(ctx context.Context, data string) bot.Reply {
+		if r, ok := wl.Callback(ctx, data); ok {
+			return r
+		}
+		return bot.Reply{Text: asst.HandleCallback(ctx, data)}
+	}
 	sched := reminders.NewScheduler(db, tgBot, time.Now, cfg.Location, log)
 
 	httpSrv := &http.Server{
