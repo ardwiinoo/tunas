@@ -38,8 +38,8 @@ func collectWorklog(rows pgx.Rows, err error) ([]WorklogEntry, error) {
 
 // markDirty flags the month of d for the GitHub backup.
 func markDirty(ctx context.Context, tx pgx.Tx, d time.Time) error {
-	_, err := tx.Exec(ctx, `insert into worklog_sync(month, dirty) values ($1, true)
-		on conflict (month) do update set dirty = true`, d.Format("2006-01"))
+	_, err := tx.Exec(ctx, `insert into worklog_sync(month, dirty, changed_at) values ($1, true, clock_timestamp())
+		on conflict (month) do update set dirty = true, changed_at = clock_timestamp()`, d.Format("2006-01"))
 	return err
 }
 
@@ -349,5 +349,74 @@ func (db *DB) AnswerPrompt(ctx context.Context, id int64, status, via string, no
 // ClearPromptMessage forgets a prompt's message after it was deleted.
 func (db *DB) ClearPromptMessage(ctx context.Context, id int64) error {
 	_, err := db.Pool.Exec(ctx, `update worklog_prompts set telegram_message_id = null where id = $1`, id)
+	return err
+}
+
+// --- GitHub backup state ----------------------------------------------------
+
+// WorklogSync is a row of worklog_sync.
+type WorklogSync struct {
+	Month           string // "2026-11"
+	Dirty           bool
+	LastSHA         *string
+	LastContentHash *string
+	LastSyncedAt    *time.Time
+	LastError       *string
+	Status          string // pending | ok | conflict | error
+	ChangedAt       time.Time
+}
+
+const syncCols = `month, dirty, last_sha, last_content_hash, last_synced_at, last_error, status, changed_at`
+
+func scanSync(r pgx.Row, s *WorklogSync) error {
+	return r.Scan(&s.Month, &s.Dirty, &s.LastSHA, &s.LastContentHash, &s.LastSyncedAt, &s.LastError, &s.Status, &s.ChangedAt)
+}
+
+// SyncStates lists the backup state of every month (oldest first).
+func (db *DB) SyncStates(ctx context.Context) ([]WorklogSync, error) {
+	rows, err := db.Pool.Query(ctx, `select `+syncCols+` from worklog_sync order by month`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (WorklogSync, error) {
+		var s WorklogSync
+		return s, scanSync(r, &s)
+	})
+}
+
+// SyncState returns one month's state (ErrNotFound if it was never touched).
+func (db *DB) SyncState(ctx context.Context, month string) (WorklogSync, error) {
+	var s WorklogSync
+	err := scanSync(db.Pool.QueryRow(ctx, `select `+syncCols+` from worklog_sync where month = $1`, month), &s)
+	return s, notFound(err)
+}
+
+// MarkMonthDirty flags a month for backup (e.g. /worklog sync).
+func (db *DB) MarkMonthDirty(ctx context.Context, month string) error {
+	_, err := db.Pool.Exec(ctx, `insert into worklog_sync(month, dirty, changed_at) values ($1, true, '-infinity')
+		on conflict (month) do update set dirty = true`, month)
+	return err
+}
+
+// SyncOK records a successful push. The month stays dirty when it changed
+// again after changedAt (the change was not in the pushed content).
+func (db *DB) SyncOK(ctx context.Context, month, sha, hash string, changedAt, now time.Time) error {
+	_, err := db.Pool.Exec(ctx, `update worklog_sync set last_sha = $2, last_content_hash = $3, last_synced_at = $5,
+		last_error = null, status = 'ok', dirty = (changed_at > $4) where month = $1`, month, sha, hash, changedAt, now)
+	return err
+}
+
+// SyncFailed records a failed push (status error or conflict).
+func (db *DB) SyncFailed(ctx context.Context, month, status, msg string) error {
+	_, err := db.Pool.Exec(ctx, `update worklog_sync set status = $2, last_error = $3 where month = $1`, month, status, msg)
+	return err
+}
+
+// SyncImported records a month that matches a file already in the repo.
+func (db *DB) SyncImported(ctx context.Context, month, sha, hash string, dirty bool, now time.Time) error {
+	_, err := db.Pool.Exec(ctx, `insert into worklog_sync(month, dirty, last_sha, last_content_hash, last_synced_at, status, changed_at)
+		values ($1, $4, $2, $3, $5, 'ok', $5)
+		on conflict (month) do update set dirty = $4, last_sha = $2, last_content_hash = $3, last_synced_at = $5,
+		status = 'ok', last_error = null, changed_at = $5`, month, sha, hash, dirty, now)
 	return err
 }
