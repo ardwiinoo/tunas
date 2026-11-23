@@ -132,11 +132,26 @@ func (c *Client) Heartbeat(ctx context.Context, version string, paused bool) (in
 	return out.Pending, err
 }
 
+// ChatReply is the server's answer to a bubble message. A non-empty
+// ConfirmID means Reply is a proposal (reminder/task) that is saved only
+// after Confirm(id, true).
+type ChatReply struct {
+	Reply     string `json:"reply"`
+	ConfirmID string `json:"confirm_id"`
+}
+
 // Chat sends overlay text and returns Tunas's reply.
-func (c *Client) Chat(ctx context.Context, text, form string) (string, error) {
+func (c *Client) Chat(ctx context.Context, text, form string) (ChatReply, error) {
+	var out ChatReply
+	err := c.do(ctx, http.MethodPost, "/v1/agent/chat", map[string]string{"text": text, "form": form}, &out)
+	return out, err
+}
+
+// Confirm answers a proposal (yes = save it) and returns what happened.
+func (c *Client) Confirm(ctx context.Context, id string, yes bool) (string, error) {
 	var out struct {
 		Reply string `json:"reply"`
 	}
-	err := c.do(ctx, http.MethodPost, "/v1/agent/chat", map[string]string{"text": text, "form": form}, &out)
+	err := c.do(ctx, http.MethodPost, "/v1/agent/chat/confirm", map[string]any{"id": id, "yes": yes}, &out)
 	return out.Reply, err
 }

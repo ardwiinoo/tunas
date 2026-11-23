@@ -22,10 +22,11 @@ const (
 	Slow                  // still waiting after SlowAfter; input locked
 	Failed                // the chat failed: reason plus the text box to retry
 	Reply                 // the chat reply until hideAt
+	Confirm               // a proposal (reminder/task): Enter = Ya, Esc = Batal
 )
 
 func (s State) String() string {
-	return [...]string{"idle", "showing", "input", "thinking", "slow", "failed", "reply"}[s]
+	return [...]string{"idle", "showing", "input", "thinking", "slow", "failed", "reply", "confirm"}[s]
 }
 
 // kind says how important a bubble is, which decides what may replace it.
@@ -53,6 +54,8 @@ type bubble struct {
 //	Thinking/Slow --error--> Failed (reason + previous text, Enter retries)
 //	Thinking/Slow --ThinkLimit--> Failed (safety net if no result arrives)
 //	Showing/Reply --timeout/click--> next queued bubble, else Idle
+//	Thinking/Slow --proposal--> Confirm --Enter--> Thinking (saving) --> Reply
+//	Confirm --Esc/hotkey--> Reply("Oke, dibatalkan.")   Confirm --timeout--> next
 //
 // While thinking the input is locked: typing, Enter and the hotkey are
 // ignored, so a message cannot be sent twice. Reminders and replies that
@@ -69,6 +72,9 @@ type Presenter struct {
 	typedAt time.Time // last input activity
 	since   time.Time // when Thinking started
 	queue   []bubble
+
+	confirmID string // Confirm
+	confirmQ  string // Confirm: the interpretation shown to the owner
 }
 
 // Timings and limits.
@@ -83,6 +89,12 @@ const (
 	MaxQueue     = 4
 	InputTimeout = 60 * time.Second // the text box closes after this long without typing
 )
+
+// ConfirmHint is shown under a proposal.
+const ConfirmHint = "Enter = Ya · Esc = Batal"
+
+// TextCancelled is shown after Esc on a proposal.
+const TextCancelled = "Oke, dibatalkan."
 
 // Bubble texts. Every character must exist in the embedded font (see
 // TestFixedTextsHaveGlyphs); U+258F, for example, does not.
@@ -124,6 +136,10 @@ func (p *Presenter) Visible() bool { return p.State != Idle }
 
 // Typing reports whether keystrokes go to the text box.
 func (p *Presenter) Typing() bool { return p.State == Input || p.State == Failed }
+
+// KeysWanted reports whether the window needs keyboard focus (text box or
+// a proposal waiting for Enter/Esc).
+func (p *Presenter) KeysWanted() bool { return p.Typing() || p.State == Confirm }
 
 // Waiting reports whether a chat reply is pending (input locked).
 func (p *Presenter) Waiting() bool { return p.State == Thinking || p.State == Slow }
@@ -177,6 +193,37 @@ func (p *Presenter) OnReply(text string, now time.Time) {
 		return
 	}
 	p.offer(b, now) // a late reply: treat like any other important bubble
+}
+
+// OnProposal shows the server's interpretation of a reminder/task request
+// and waits for Enter (save) or Esc (cancel). Nothing is saved before that.
+func (p *Presenter) OnProposal(question, id string, now time.Time) {
+	if !p.Waiting() {
+		return // the owner moved on; the server drops the proposal after 10 min
+	}
+	p.State, p.confirmID, p.confirmQ, p.typedAt = Confirm, id, question, now
+}
+
+// Accept confirms the proposal: it returns the id to send and waits for the
+// server's real result ("" if there is no proposal).
+func (p *Presenter) Accept(now time.Time) string {
+	if p.State != Confirm {
+		return ""
+	}
+	id := p.confirmID
+	p.State, p.since, p.sent, p.confirmID = Thinking, now, "", ""
+	return id
+}
+
+// Decline cancels the proposal locally and returns the id to report.
+func (p *Presenter) Decline(now time.Time) string {
+	if p.State != Confirm {
+		return ""
+	}
+	id := p.confirmID
+	p.confirmID = ""
+	p.show(bubble{text: TextCancelled, kind: kindReply, d: DefaultShow}, now)
+	return id
 }
 
 // OnChatFailed reports a failed chat with a user-facing reason. The text box
@@ -331,6 +378,11 @@ func (p *Presenter) Tick(now time.Time) {
 		if !now.Before(p.hideAt) {
 			p.next(now)
 		}
+	case Confirm:
+		if now.Sub(p.typedAt) >= InputTimeout {
+			p.confirmID = ""
+			p.next(now) // unanswered: nothing saved
+		}
 	}
 }
 
@@ -349,6 +401,8 @@ func (p *Presenter) BubbleText() string {
 		return TextSlow
 	case Showing, Reply:
 		return p.cur.text
+	case Confirm:
+		return p.confirmQ + "\n" + ConfirmHint
 	}
 	return ""
 }

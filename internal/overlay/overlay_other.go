@@ -12,8 +12,11 @@ import (
 	"github.com/ardwiinoo/tunas/internal/forms"
 )
 
-// ChatFunc sends typed text to the server and returns Tunas's reply.
-type ChatFunc func(ctx context.Context, text string, f forms.Form) (string, error)
+// ChatAPI is the server side of the bubble (agent.Client implements it).
+type ChatAPI interface {
+	Chat(ctx context.Context, text, form string) (agent.ChatReply, error)
+	Confirm(ctx context.Context, id string, yes bool) (string, error)
+}
 
 // Overlay is unavailable outside Windows.
 type Overlay struct {
@@ -27,7 +30,7 @@ type Overlay struct {
 func (*Overlay) SetConn(agent.ConnState) {}
 
 // New returns an error: the overlay is Windows-only.
-func New(config.AgentOverlay, ChatFunc, *slog.Logger) (*Overlay, error) {
+func New(config.AgentOverlay, ChatAPI, *slog.Logger) (*Overlay, error) {
 	return nil, errors.New("overlay is only supported on Windows")
 }
 

@@ -18,12 +18,13 @@ const errInternal = "internal error"
 
 // Server is the HTTP handler set.
 type Server struct {
-	log  *slog.Logger
-	db   *store.DB
-	now  func() time.Time
-	mux  *http.ServeMux
-	rl   *rateLimiter
-	chat func(ctx context.Context, form, text string) (string, error)
+	log     *slog.Logger
+	db      *store.DB
+	now     func() time.Time
+	mux     *http.ServeMux
+	rl      *rateLimiter
+	chat    func(ctx context.Context, form, text string) (ChatResult, error)
+	confirm func(ctx context.Context, id string, yes bool) string
 }
 
 // Options configures the API.
@@ -34,7 +35,9 @@ type Options struct {
 	RatePerMinute, RateBurst int
 	// Chat answers overlay chat (form may be "" for the server's active form).
 	// An error is an LLM failure, reported to the agent as llm.Kind.
-	Chat func(ctx context.Context, form, text string) (string, error)
+	Chat func(ctx context.Context, form, text string) (ChatResult, error)
+	// Confirm resolves a proposal returned by Chat (ChatResult.ConfirmID).
+	Confirm func(ctx context.Context, id string, yes bool) string
 }
 
 // New builds the HTTP handler.
@@ -46,7 +49,7 @@ func New(log *slog.Logger, o Options) *Server {
 		o.RatePerMinute, o.RateBurst = 120, 30
 	}
 	s := &Server{log: log, db: o.DB, now: o.Now, mux: http.NewServeMux(),
-		rl: newRateLimiter(o.RatePerMinute, o.RateBurst, o.Now), chat: o.Chat}
+		rl: newRateLimiter(o.RatePerMinute, o.RateBurst, o.Now), chat: o.Chat, confirm: o.Confirm}
 	s.mux.HandleFunc("GET /healthz", s.healthz)
 	s.routes()
 	return s

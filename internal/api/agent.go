@@ -44,6 +44,9 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 	if s.chat != nil {
 		mux.Handle("POST /v1/agent/chat", s.auth(s.postChat))
 	}
+	if s.confirm != nil {
+		mux.Handle("POST /v1/agent/chat/confirm", s.auth(s.postConfirm))
+	}
 }
 
 // auth requires a valid, unrevoked device token.
@@ -244,12 +247,34 @@ func (s *Server) postChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid text")
 		return
 	}
-	reply, err := s.chat(r.Context(), req.Form, req.Text)
+	res, err := s.chat(r.Context(), req.Form, req.Text)
 	if err != nil {
 		// 503 with a machine-readable reason so the overlay can say why
 		// (quota used up, LLM too slow, LLM failing).
 		writeError(w, http.StatusServiceUnavailable, llm.Kind(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"reply": reply})
+	writeJSON(w, http.StatusOK, res)
+}
+
+// ChatResult is the chat reply. A non-empty ConfirmID means Reply is a
+// proposal (reminder/task) that is only saved after POST /chat/confirm.
+type ChatResult struct {
+	Reply     string `json:"reply"`
+	ConfirmID string `json:"confirm_id,omitempty"`
+}
+
+func (s *Server) postConfirm(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID  string `json:"id"`
+		Yes bool   `json:"yes"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.ID == "" || len(req.ID) > 64 {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"reply": s.confirm(r.Context(), req.ID, req.Yes)})
 }

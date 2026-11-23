@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -170,11 +171,26 @@ func ParseIntent(raw string) (Intent, error) {
 	return in, nil
 }
 
-// HandleText handles a free-text message from the owner.
+// HandleText handles a free-text message from the owner on Telegram.
 func (a *Assistant) HandleText(ctx context.Context, text string) bot.Reply {
+	r, err := a.Handle(ctx, a.ActiveForm(ctx), text)
+	if err != nil {
+		return bot.Reply{Text: LLMFailText(err)}
+	}
+	return r
+}
+
+// Handle is the shared natural-language pipeline for Telegram and the
+// overlay bubble: classify the intent, then
+//   - reminder/task: propose with a confirmation (nothing is saved yet),
+//   - question about activity: fixed query template, model only phrases,
+//   - anything else: persona chat with guardrails.
+//
+// The error is an LLM failure (see llm.Kind); the caller words it.
+func (a *Assistant) Handle(ctx context.Context, f forms.Form, text string) (bot.Reply, error) {
 	text = strings.TrimSpace(text)
 	if utf8.RuneCountInString(text) > MaxInputLen {
-		return bot.Reply{Text: fmt.Sprintf("Pesannya terlalu panjang (maks %d karakter).", MaxInputLen)}
+		return bot.Reply{Text: fmt.Sprintf("Pesannya terlalu panjang (maks %d karakter).", MaxInputLen)}, nil
 	}
 	now := a.Now()
 	raw, err := a.LLM.Complete(ctx, []llm.Message{
@@ -183,22 +199,44 @@ func (a *Assistant) HandleText(ctx context.Context, text string) bot.Reply {
 	})
 	if err != nil {
 		a.logLLMErr("classify", err)
-		return bot.Reply{Text: LLMFailText(err)}
+		return bot.Reply{}, err
 	}
 	in, err := ParseIntent(raw)
 	if err != nil {
 		a.Log.Warn("intent rejected", "err", err)
-		return bot.Reply{Text: "Maaf, aku kurang paham. Coba pakai /remind, /task, atau /tanya ya."}
+		return bot.Reply{Text: "Maaf, aku kurang paham. Coba pakai /remind, /task, atau /tanya ya."}, nil
 	}
 	switch in.Intent {
 	case "reminder":
-		return a.proposeReminder(in, now)
+		return a.proposeReminder(in, now), nil
 	case "task":
-		return a.propose(pendingAction{kind: "task", text: in.Title}, "Tambah tugas: "+in.Title+"?")
+		return a.propose(pendingAction{kind: "task", text: in.Title}, "Tambah tugas: "+in.Title+"?"), nil
 	case "question":
-		return bot.Reply{Text: a.answer(ctx, text, in.Template, in.Range)}
+		return bot.Reply{Text: a.answerAs(ctx, f, text, in.Template, in.Range)}, nil
 	}
-	return bot.Reply{Text: a.Chat(ctx, text)}
+	out, err := a.ChatAs(ctx, f, text)
+	return bot.Reply{Text: out}, err
+}
+
+// ConfirmID returns the pending-action id carried by a proposal's buttons
+// ("" when the reply needs no confirmation).
+func ConfirmID(r bot.Reply) string {
+	for _, b := range r.Buttons {
+		if id, ok := strings.CutPrefix(b.Data, "ok:"); ok {
+			return id
+		}
+	}
+	return ""
+}
+
+// Confirm resolves a proposal from the overlay (Enter = yes, Esc = no) and
+// returns what really happened.
+func (a *Assistant) Confirm(ctx context.Context, id string, yes bool) string {
+	verb := "no"
+	if yes {
+		verb = "ok"
+	}
+	return a.HandleCallback(ctx, verb+":"+id)
 }
 
 func (a *Assistant) proposeReminder(in Intent, now time.Time) bot.Reply {
@@ -291,6 +329,14 @@ func (a *Assistant) voice(f forms.Form) string {
 
 const factRule = "\nAturan: data (waktu, angka, nama aplikasi) di bagian FAKTA adalah kebenaran; jangan mengubah, menambah, atau mengarang data. Jangan meniru karakter dari film, game, atau anime mana pun."
 
+// chatRule guards free chat, where no personal data is given to the model.
+const chatRule = "\nAturan obrolan: kamu TIDAK punya akses ke data pribadi pengguna (aktivitas laptop, aplikasi, " +
+	"pengingat, tugas) kecuali yang diberikan di bagian FAKTA, dan di obrolan ini tidak ada FAKTA. Bila ditanya " +
+	"soal data seperti itu, jawab jujur bahwa kamu belum punya datanya dan sarankan bertanya langsung, mis. " +
+	"\"hari ini paling lama pakai apa?\"; jangan pernah mengarang angka, durasi, atau nama aplikasi. Kamu tidak bisa " +
+	"membuat, mengubah, atau menghapus pengingat/tugas dari obrolan: jangan pernah bilang sudah melakukannya; " +
+	"sarankan menulis mis. \"ingatkan aku jam 5 sore ...\". Jangan meniru karakter dari film, game, atau anime mana pun."
+
 // Chat replies in the active persona (no personal data is sent).
 func (a *Assistant) Chat(ctx context.Context, text string) string {
 	out, err := a.ChatAs(ctx, a.ActiveForm(ctx), text)
@@ -304,7 +350,7 @@ func (a *Assistant) Chat(ctx context.Context, text string) string {
 // callers tell the user why there is no answer.
 func (a *Assistant) ChatAs(ctx context.Context, f forms.Form, text string) (string, error) {
 	out, err := a.LLM.Complete(ctx, []llm.Message{
-		{Role: "system", Content: a.voice(f) + factRule},
+		{Role: "system", Content: a.voice(f) + chatRule},
 		{Role: "user", Content: text},
 	})
 	if err != nil {
@@ -324,7 +370,30 @@ func (a *Assistant) phrase(ctx context.Context, f forms.Form, instruction, facts
 		a.logLLMErr("phrase", err)
 		return facts
 	}
+	// Numbers must come from the query result, never from the model.
+	if bad := foreignNumbers(out, facts+" "+instruction); len(bad) > 0 {
+		a.Log.Warn("llm answer rejected: numbers not in facts", "numbers", strings.Join(bad, ","))
+		return facts
+	}
 	return out
+}
+
+var reNumber = regexp.MustCompile(`\d+(?:[.,]\d+)?`)
+
+// foreignNumbers lists numbers in out that do not appear in allowed.
+func foreignNumbers(out, allowed string) []string {
+	ok := map[string]bool{}
+	for _, n := range reNumber.FindAllString(allowed, -1) {
+		ok[n] = true
+		ok[strings.TrimLeft(n, "0")] = true // "08:05" in facts vs "8" in prose
+	}
+	var bad []string
+	for _, n := range reNumber.FindAllString(out, -1) {
+		if !ok[n] && !ok[strings.TrimLeft(n, "0")] {
+			bad = append(bad, n)
+		}
+	}
+	return bad
 }
 
 // --- /form ------------------------------------------------------------------

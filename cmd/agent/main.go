@@ -17,7 +17,6 @@ import (
 
 	"github.com/ardwiinoo/tunas/internal/agent"
 	"github.com/ardwiinoo/tunas/internal/config"
-	"github.com/ardwiinoo/tunas/internal/forms"
 	"github.com/ardwiinoo/tunas/internal/overlay"
 )
 
@@ -128,9 +127,7 @@ func run(cfgPath string, debug bool) error {
 
 	// The window also carries the tray icon, so it runs even when the
 	// character is disabled in config.yaml (tray only).
-	ov, err := overlay.New(cfg.Overlay, func(ctx context.Context, text string, f forms.Form) (string, error) {
-		return client.Chat(ctx, text, string(f))
-	}, log)
+	ov, err := overlay.New(cfg.Overlay, client, log)
 	if err != nil {
 		log.Warn("overlay and tray unavailable", "err", err)
 		ov = nil

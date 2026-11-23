@@ -33,15 +33,19 @@ func newHarness(t *testing.T) *harness {
 	}
 	h := &harness{t: t, db: db, token: token, now: time.Now().Truncate(time.Minute)}
 	h.srv = httptest.NewServer(New(slog.New(slog.DiscardHandler), Options{DB: db, Now: func() time.Time { return h.now },
-		Chat: func(_ context.Context, form, text string) (string, error) {
+		Chat: func(_ context.Context, form, text string) (ChatResult, error) {
 			switch text {
 			case "habis":
-				return "", llm.ErrCap
+				return ChatResult{}, llm.ErrCap
 			case "lambat":
-				return "", fmt.Errorf("x: %w", llm.ErrTimeout)
+				return ChatResult{}, fmt.Errorf("x: %w", llm.ErrTimeout)
+			case "ingatkan":
+				return ChatResult{Reply: "Buat pengingat?", ConfirmID: "abc123"}, nil
 			}
-			return "[" + form + "] " + text, nil
-		}}))
+			return ChatResult{Reply: "[" + form + "] " + text}, nil
+		},
+		Confirm: func(_ context.Context, id string, yes bool) string { return fmt.Sprint("confirm ", id, " ", yes) },
+	}))
 	t.Cleanup(h.srv.Close)
 	return h
 }
@@ -201,6 +205,19 @@ func TestChat(t *testing.T) {
 	}
 	if code, _ := h.do("POST", "/v1/agent/chat", "", map[string]string{"text": "x"}); code != 401 {
 		t.Error("chat without token")
+	}
+	code, out = h.do("POST", "/v1/agent/chat", h.token, map[string]string{"text": "ingatkan"})
+	if code != 200 || out["confirm_id"] != "abc123" {
+		t.Fatalf("proposal = %d %v", code, out)
+	}
+	if code, out := h.do("POST", "/v1/agent/chat/confirm", h.token, map[string]any{"id": "abc123", "yes": true}); code != 200 || out["reply"] != "confirm abc123 true" {
+		t.Fatalf("confirm = %d %v", code, out)
+	}
+	if code, _ := h.do("POST", "/v1/agent/chat/confirm", h.token, map[string]any{"id": ""}); code != 400 {
+		t.Errorf("empty id → %d", code)
+	}
+	if code, _ := h.do("POST", "/v1/agent/chat/confirm", "", map[string]any{"id": "x"}); code != 401 {
+		t.Errorf("confirm without token → %d", code)
 	}
 	for text, want := range map[string]string{"habis": llm.KindCap, "lambat": llm.KindTimeout} {
 		if code, out := h.do("POST", "/v1/agent/chat", h.token, map[string]string{"text": text}); code != 503 || out["error"] != want {
