@@ -137,16 +137,22 @@ func serve() error {
 
 	httpSrv := &http.Server{
 		Addr: cfg.HTTPAddr,
-		Handler: api.New(log, api.Options{DB: db, Chat: func(ctx context.Context, form, text string) (string, error) {
-			if q, ok := cutPrefixFold(text, "cari "); ok {
-				return asst.Search(ctx, searcher, q), nil
-			}
-			f := forms.Form(form)
-			if !forms.Valid(f) {
-				f = asst.ActiveForm(ctx)
-			}
-			return asst.ChatAs(ctx, f, text)
-		}}),
+		Handler: api.New(log, api.Options{DB: db,
+			// the bubble uses the same pipeline as Telegram (intent, fixed
+			// queries, confirmation), plus "cari ..." for web search
+			Chat: func(ctx context.Context, form, text string) (api.ChatResult, error) {
+				if q, ok := cutPrefixFold(text, "cari "); ok {
+					return api.ChatResult{Reply: asst.Search(ctx, searcher, q)}, nil
+				}
+				f := forms.Form(form)
+				if !forms.Valid(f) {
+					f = asst.ActiveForm(ctx)
+				}
+				r, err := asst.Handle(ctx, f, text)
+				return api.ChatResult{Reply: r.Text, ConfirmID: assist.ConfirmID(r)}, err
+			},
+			Confirm: asst.Confirm,
+		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}

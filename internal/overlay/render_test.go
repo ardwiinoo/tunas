@@ -68,7 +68,7 @@ func TestFixedTextsHaveGlyphs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	texts := []string{Cursor, "› ", "…", TextThinking, TextSlow}
+	texts := []string{Cursor, "› ", "…", TextThinking, TextSlow, ConfirmHint, TextCancelled}
 	for _, f := range []agent.ChatFail{agent.FailTimeout, agent.FailOffline, agent.FailCap, agent.FailLLM,
 		agent.FailDisabled, agent.FailAuth, agent.FailBusy, agent.FailServer,
 		agent.FailBlocked, agent.FailQuota, agent.FailDown} {

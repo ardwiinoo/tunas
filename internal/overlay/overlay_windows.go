@@ -143,8 +143,11 @@ type winMsg struct {
 	_       uint32
 }
 
-// ChatFunc sends typed text to the server and returns Tunas's reply.
-type ChatFunc func(ctx context.Context, text string, f forms.Form) (string, error)
+// ChatAPI is the server side of the bubble (agent.Client implements it).
+type ChatAPI interface {
+	Chat(ctx context.Context, text, form string) (agent.ChatReply, error)
+	Confirm(ctx context.Context, id string, yes bool) (string, error)
+}
 
 // Overlay is the on-screen character window and the tray icon.
 type Overlay struct {
@@ -157,7 +160,7 @@ type Overlay struct {
 
 	cfg      config.AgentOverlay
 	log      *slog.Logger
-	chat     ChatFunc
+	chat     ChatAPI
 	renderer Renderer
 
 	formCh  chan forms.Output
@@ -195,7 +198,7 @@ func (o *Overlay) SetConn(s agent.ConnState) { o.conn.Store(int32(s)) }
 var theOverlay *Overlay // the window procedure needs a global
 
 // New creates the overlay. Run must be called on the main goroutine.
-func New(cfg config.AgentOverlay, chat ChatFunc, log *slog.Logger) (*Overlay, error) {
+func New(cfg config.AgentOverlay, chat ChatAPI, log *slog.Logger) (*Overlay, error) {
 	mf, err := NewFace(fontSize)
 	if err != nil {
 		return nil, err
@@ -207,10 +210,11 @@ func New(cfg config.AgentOverlay, chat ChatFunc, log *slog.Logger) (*Overlay, er
 	}, nil
 }
 
-// chatResult is the outcome of one chat call.
+// chatResult is the outcome of one chat or confirm call.
 type chatResult struct {
-	reply string
-	fail  agent.ChatFail // "" on success
+	reply     string
+	confirmID string         // a proposal waiting for Enter/Esc
+	fail      agent.ChatFail // "" on success
 }
 
 const (
@@ -297,9 +301,13 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 		o.tick(now)
 		return 0
 	case wmHotkey:
-		o.p.OnHotkey(now)
+		if o.p.State == Confirm { // hotkey on a proposal = Batal
+			o.decline(now)
+		} else {
+			o.p.OnHotkey(now)
+		}
 		o.sync(now)
-		if o.p.Typing() {
+		if o.p.KeysWanted() {
 			pSetForegroundWindow.Call(hwnd) //nolint:errcheck
 		}
 		return 0
@@ -311,7 +319,7 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 		o.sync(now)
 		return 0
 	case wmMouseActivate:
-		if !o.p.Typing() {
+		if !o.p.KeysWanted() {
 			return maNoActivate // clicking Tunas must not steal focus
 		}
 	case wmTray:
@@ -335,6 +343,18 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 }
 
 func (o *Overlay) onChar(u uint16, now time.Time) {
+	if o.p.State == Confirm {
+		switch u {
+		case 0x0D: // Enter = Ya: save, then show what really happened
+			if id := o.p.Accept(now); id != "" {
+				go o.answer(id, true)
+			}
+		case 0x1B: // Esc = Batal
+			o.decline(now)
+		}
+		o.sync(now)
+		return
+	}
 	if !o.p.Typing() {
 		return
 	}
@@ -365,8 +385,8 @@ func (o *Overlay) ask(text string, f forms.Form) {
 	ctx, cancel := context.WithTimeout(o.ctx, chatTimeout)
 	defer cancel()
 	start := time.Now()
-	reply, err := o.chat(ctx, text, f)
-	res := chatResult{reply: reply}
+	reply, err := o.chat.Chat(ctx, text, string(f))
+	res := chatResult{reply: reply.Reply, confirmID: reply.ConfirmID}
 	if err != nil {
 		res.fail = agent.ClassifyChatError(err)
 		// the token is only ever in a request header, never in err
@@ -380,8 +400,39 @@ func (o *Overlay) ask(text string, f forms.Form) {
 	}
 }
 
+// answer sends Enter/Esc on a proposal. For Enter the real outcome (saved
+// or not) comes back as the reply; Esc was already shown locally.
+func (o *Overlay) answer(id string, yes bool) {
+	ctx, cancel := context.WithTimeout(o.ctx, chatTimeout)
+	defer cancel()
+	reply, err := o.chat.Confirm(ctx, id, yes)
+	if !yes {
+		if err != nil {
+			o.log.Warn("cancel proposal failed (it expires on its own)", "err", err.Error())
+		}
+		return
+	}
+	res := chatResult{reply: reply}
+	if err != nil {
+		res.fail = agent.ClassifyChatError(err)
+		o.log.Warn("confirm failed", "kind", string(res.fail), "err", err.Error())
+	} else {
+		o.log.Info("confirm ok")
+	}
+	select {
+	case o.replyCh <- res:
+	case <-o.ctx.Done():
+	}
+}
+
+func (o *Overlay) decline(now time.Time) {
+	if id := o.p.Decline(now); id != "" {
+		go o.answer(id, false)
+	}
+}
+
 func (o *Overlay) tick(now time.Time) {
-	wasTyping := o.p.Typing()
+	wasKeys := o.p.KeysWanted()
 	for drained := false; !drained; {
 		select {
 		case out := <-o.formCh:
@@ -393,9 +444,12 @@ func (o *Overlay) tick(now time.Time) {
 			}
 			o.p.OnForm(out, now)
 		case r := <-o.replyCh:
-			if r.fail != "" {
+			switch {
+			case r.fail != "":
 				o.p.OnChatFailed(FailText(r.fail), now)
-			} else {
+			case r.confirmID != "":
+				o.p.OnProposal(r.reply, r.confirmID, now)
+			default:
 				o.p.OnReply(r.reply, now)
 			}
 		default:
@@ -404,7 +458,7 @@ func (o *Overlay) tick(now time.Time) {
 	}
 	o.trayTick()
 	o.p.Tick(now)
-	if o.p.Typing() && !wasTyping { // failed: the text box is back for a retry
+	if o.p.KeysWanted() && !wasKeys { // a proposal, or the text box back after a failure
 		pSetForegroundWindow.Call(o.hwnd) //nolint:errcheck
 	}
 	o.sync(now)

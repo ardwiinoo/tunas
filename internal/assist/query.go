@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ardwiinoo/tunas/internal/activity"
+	"github.com/ardwiinoo/tunas/internal/forms"
 	"github.com/ardwiinoo/tunas/internal/llm"
 	"github.com/ardwiinoo/tunas/internal/reminders"
 )
@@ -94,6 +95,11 @@ func (a *Assistant) Ask(ctx context.Context, question string) string {
 }
 
 func (a *Assistant) answer(ctx context.Context, question, tpl, rng string) string {
+	return a.answerAs(ctx, a.ActiveForm(ctx), question, tpl, rng)
+}
+
+// answerAs runs the template and lets form f phrase the facts.
+func (a *Assistant) answerAs(ctx context.Context, f forms.Form, question, tpl, rng string) string {
 	facts, err := a.Facts(ctx, tpl, rng)
 	if err != nil {
 		a.Log.Error("query failed", "err", err)

@@ -516,3 +516,56 @@ func TestSingleBubbleThroughChat(t *testing.T) {
 		t.Fatalf("order = %s", got)
 	}
 }
+
+func TestProposalConfirmFlow(t *testing.T) {
+	clk := &fakeClock{now: t0}
+	var p Presenter
+	sendChat(t, &p, "ingatkan aku jam 5 sore minum obat", clk.now)
+	p.OnProposal("Buat pengingat Sen 23 Nov 17:00 WIB: minum obat?", "id1", clk.add(time.Second))
+	checkOne(t, &p)
+	if p.State != Confirm || !p.KeysWanted() || p.Typing() ||
+		p.BubbleText() != "Buat pengingat Sen 23 Nov 17:00 WIB: minum obat?\n"+ConfirmHint {
+		t.Fatalf("proposal: %s %q", p.State, p.BubbleText())
+	}
+	// typing and Submit do nothing on a proposal
+	p.Type([]rune("x"), clk.now)
+	if p.Submit(clk.now) != "" || p.State != Confirm {
+		t.Fatal("proposal must only take Enter/Esc")
+	}
+	p.OnForm(reminder("rapat"), clk.now) // queued, does not cover the question
+	if p.State != Confirm || p.Queued() != 1 {
+		t.Fatal("reminder must wait behind the proposal")
+	}
+	if id := p.Accept(clk.add(time.Second)); id != "id1" || p.State != Thinking {
+		t.Fatalf("accept = %q %s", id, p.State)
+	}
+	if p.Accept(clk.now) != "" {
+		t.Fatal("accept is single-use")
+	}
+	p.OnReply("Oke, diingatkan Sen 23 Nov 17:00 WIB: minum obat [#7]", clk.add(time.Second))
+	if got := strings.Join(drain(t, &p, clk.now), "|"); got != "Oke, diingatkan Sen 23 Nov 17:00 WIB: minum obat [#7]|rapat" {
+		t.Fatalf("after accept: %q", got)
+	}
+
+	// Esc = Batal: shown at once, nothing to wait for
+	sendChat(t, &p, "catat tugas x", clk.now)
+	p.OnProposal("Tambah tugas: x?", "id2", clk.now)
+	if id := p.Decline(clk.now); id != "id2" || p.State != Reply || p.BubbleText() != TextCancelled {
+		t.Fatalf("decline = %q %s %q", id, p.State, p.BubbleText())
+	}
+
+	// unanswered proposals close after InputTimeout
+	p.Dismiss(clk.now)
+	sendChat(t, &p, "catat tugas y", clk.now)
+	p.OnProposal("Tambah tugas: y?", "id3", clk.now)
+	p.Tick(clk.add(InputTimeout))
+	if p.State != Idle {
+		t.Fatalf("unanswered proposal: %s", p.State)
+	}
+
+	// a proposal that arrives after the owner moved on is ignored
+	p.OnProposal("Tambah tugas: z?", "id4", clk.now)
+	if p.State != Idle {
+		t.Fatal("late proposal must not pop up")
+	}
+}
