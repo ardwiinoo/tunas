@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ardwiinoo/tunas/internal/bot"
+	"github.com/ardwiinoo/tunas/internal/llm"
 	"github.com/ardwiinoo/tunas/internal/store"
 )
 
@@ -33,9 +34,14 @@ type Service struct {
 	ChatID int64 // the owner's private chat (bot_pending key)
 	// OnSaved is called after an entry is saved (closes open reminders).
 	OnSaved func(ctx context.Context, e store.WorklogEntry, via string, promptID int64)
-	// Extra handles later commands (/worklog, /rekap) and callbacks.
+	// Extra handles later commands (/worklog) and callbacks.
 	ExtraCommand  func(ctx context.Context, cmd, args string) (bot.Reply, bool)
 	ExtraCallback func(ctx context.Context, data string) (bot.Reply, bool)
+	// Send posts a new message; SendDoc a file (long recaps). LLM is only
+	// used by /rekap ai. All optional.
+	Send    func(ctx context.Context, r bot.Reply) error
+	SendDoc func(ctx context.Context, name string, data []byte, caption string) error
+	LLM     llm.Completer
 }
 
 type pendingPayload struct {
@@ -86,6 +92,8 @@ func (s *Service) Command(ctx context.Context, cmd, args string) (bot.Reply, boo
 			m = t
 		}
 		return s.monthReply(ctx, m), true
+	case "rekap":
+		return s.cmdRekap(ctx, args), true
 	case "libur":
 		return s.cmdOverride(ctx, "off", args), true
 	case "kerja":
@@ -257,6 +265,8 @@ func (s *Service) Callback(ctx context.Context, data string) (bot.Reply, bool) {
 			return s.dayReply(ctx, d), true
 		}
 		return bot.Reply{Text: "Oke, dibatalkan."}, true
+	case "rek", "rai", "rxn":
+		return s.rekapCallback(ctx, verb, arg)
 	case "edt", "del", "dly", "und":
 		id, err := strconv.ParseInt(arg, 10, 64)
 		if err != nil {

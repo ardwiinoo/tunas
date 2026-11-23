@@ -54,6 +54,8 @@ type Messenger interface {
 type Reminder struct {
 	Svc *Service
 	TG  Messenger
+	// Sync runs the GitHub backup now (/worklog sync [force]); nil = off.
+	Sync func(ctx context.Context, month string, force bool) string
 }
 
 // LoadSettings reads the settings with defaults.
@@ -380,6 +382,11 @@ func (r *Reminder) Command(ctx context.Context, args string) bot.Reply {
 	switch {
 	case len(f) == 0:
 		return r.status(ctx, "")
+	case f[0] == "sync":
+		if r.Sync == nil {
+			return bot.Reply{Text: "Cadangan GitHub belum diaktifkan (GITHUB_BACKUP_TOKEN/GITHUB_BACKUP_REPO kosong)."}
+		}
+		return bot.Reply{Text: r.Sync(ctx, Month(LocalDate(s.Now(), s.Loc)), len(f) > 1 && f[1] == "force")}
 	case f[0] == "on" || f[0] == "off":
 		return set(KeyEnabled, f[0] == "on")
 	case f[0] == "jam" && len(f) >= 2:
@@ -403,7 +410,7 @@ func (r *Reminder) Command(ctx context.Context, args string) bot.Reply {
 		}
 		return set(KeyClosing, fmt.Sprintf("%02d:%02d", h, m))
 	}
-	return bot.Reply{Text: "Pakai: /worklog [on|off] · /worklog jam 10:30,13:30,16:30 · /worklog penutup 17:30"}
+	return bot.Reply{Text: "Pakai: /worklog [on|off] · /worklog jam 10:30,13:30,16:30 · /worklog penutup 17:30 · /worklog sync [force]"}
 }
 
 func (r *Reminder) status(ctx context.Context, prefix string) bot.Reply {

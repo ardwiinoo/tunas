@@ -30,6 +30,7 @@ import (
 	"github.com/ardwiinoo/tunas/internal/bot"
 	"github.com/ardwiinoo/tunas/internal/config"
 	"github.com/ardwiinoo/tunas/internal/forms"
+	"github.com/ardwiinoo/tunas/internal/ghbackup"
 	"github.com/ardwiinoo/tunas/internal/holidays"
 	"github.com/ardwiinoo/tunas/internal/llm"
 	"github.com/ardwiinoo/tunas/internal/ops"
@@ -54,8 +55,10 @@ func main() {
 		err = healthcheck()
 	case "device":
 		err = deviceCmd(args, os.Stdout)
+	case "worklog":
+		err = worklogCmd(args, os.Stdout)
 	default:
-		err = fmt.Errorf("unknown command %q (use serve, healthcheck, device)", cmd)
+		err = fmt.Errorf("unknown command %q (use serve, healthcheck, device, worklog)", cmd)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -134,7 +137,26 @@ func serve() error {
 		return err
 	}
 	wl := &worklog.Service{DB: db, Loc: cfg.Location, Now: time.Now, Log: log, ChatID: cfg.TelegramOwnerID}
+	wl.Send = func(ctx context.Context, r bot.Reply) error { return tgBot.SendReply(ctx, cfg.TelegramOwnerID, r) }
+	wl.SendDoc = func(ctx context.Context, name string, data []byte, caption string) error {
+		return tgBot.SendDocument(ctx, name, bytes.NewReader(data), caption)
+	}
+	if cfg.LLMEnabled() {
+		wl.LLM = completer // /rekap ai only, counted in llm_usage
+	}
 	rem := &worklog.Reminder{Svc: wl, TG: tgBot}
+	var backup *ghbackup.Worker
+	if cfg.GitHubBackupToken != "" && cfg.GitHubBackupRepo != "" {
+		gh, err := ghbackup.NewClient(cfg.GitHubBackupToken, cfg.GitHubBackupRepo, cfg.GitHubBackupBranch, cfg.GitHubBackupDir)
+		if err != nil {
+			return err
+		}
+		backup = &ghbackup.Worker{GH: gh, DB: db, Now: time.Now, Log: log,
+			Notify: func(ctx context.Context, text string) error { return tgBot.NotifyOwner(ctx, text) }}
+		rem.Sync = backup.SyncNow
+	} else {
+		log.Info("worklog GitHub backup off (GITHUB_BACKUP_TOKEN/GITHUB_BACKUP_REPO empty)")
+	}
 	wl.OnSaved = rem.OnSaved
 	wl.ExtraCommand = func(ctx context.Context, cmd, args string) (bot.Reply, bool) {
 		if cmd == "worklog" {
@@ -200,6 +222,9 @@ func serve() error {
 		Notify: func(ctx context.Context, text string) error { return tgBot.NotifyOwner(ctx, text) }}
 	wg.Go(func() { hol.Run(ctx) })
 	wg.Go(func() { rem.Run(ctx) })
+	if backup != nil {
+		wg.Go(func() { backup.Run(ctx) })
+	}
 
 	select {
 	case <-ctx.Done():
@@ -247,6 +272,48 @@ func healthcheck() error {
 }
 
 const deviceUsage = "usage: device create --name NAME | device list | device revoke --name NAME"
+
+const worklogUsage = `usage: tunas-server worklog import [--dry-run] [--repo owner/repo] [--dir sub] [--branch main]
+  Reads every YYYYMM_daily.txt from the backup repo into the database (idempotent).
+  The token comes only from GITHUB_BACKUP_TOKEN; repo/dir/branch default to GITHUB_BACKUP_*.`
+
+// worklogCmd is "worklog import": the one-time import of the old app's files.
+func worklogCmd(args []string, out io.Writer) error {
+	if len(args) == 0 || args[0] != "import" {
+		return errors.New(worklogUsage)
+	}
+	fs := flag.NewFlagSet("worklog import", flag.ContinueOnError)
+	dry := fs.Bool("dry-run", false, "read and count, write nothing")
+	repo := fs.String("repo", os.Getenv("GITHUB_BACKUP_REPO"), "owner/repo")
+	dir := fs.String("dir", os.Getenv("GITHUB_BACKUP_DIR"), "folder in the repo")
+	branch := fs.String("branch", os.Getenv("GITHUB_BACKUP_BRANCH"), "branch (default main)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	token := strings.TrimSpace(os.Getenv("GITHUB_BACKUP_TOKEN"))
+	if token == "" {
+		return errors.New("GITHUB_BACKUP_TOKEN is required")
+	}
+	gh, err := ghbackup.NewClient(token, *repo, *branch, *dir)
+	if err != nil {
+		return err
+	}
+	dbURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
+	if dbURL == "" {
+		return errors.New("DATABASE_URL is required")
+	}
+	ctx := context.Background()
+	db, err := openDB(ctx, dbURL)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if _, err := db.Migrate(ctx); err != nil {
+		return err
+	}
+	_, err = ghbackup.Import(ctx, gh, db, *dry, time.Now(), out)
+	return err
+}
 
 func deviceCmd(args []string, out io.Writer) error {
 	if len(args) == 0 {

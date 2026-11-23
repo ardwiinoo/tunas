@@ -207,3 +207,23 @@ Gerbang fase (tes dengan jam palsu, semua lulus):
 - maks per hari.
 
 Menunggu pemilik: penerimaan di produksi (tiga pengingat di hari kerja, "Nanti", `/libur`, `/worklog off`).
+
+### Fase 7c: Cadangan GitHub, impor, rekap [x] (kode selesai; penerimaan menunggu pemilik: token + impor)
+- [x] `internal/ghbackup`:
+  - Setiap perubahan menandai bulannya `dirty` (`changed_at`, migrasi 0004).
+  - Setelah 60 dtk tenang, seluruh bulan dirender ke format aplikasi lama dan di-`PUT` dengan `sha` terakhir. Pesan commit `worklog: 2026-11 (N entri)`, tanpa isi catatan.
+  - 409/422 → ambil ulang; bila isi remote berubah di luar Tunas → `conflict`, tidak ditimpa, satu peringatan, menunggu `/worklog sync force`.
+  - Kegagalan lain: backoff 1, 5, 30 menit, lalu `error` + peringatan (cooldown 1 jam).
+  - Token hanya di header; timeout 15 dtk. Nonaktif (satu baris log) bila token/repo kosong.
+- [x] Golden test Parse → Render byte-identik dengan fixture sintetis (sejak 7a).
+- [x] `tunas-server worklog import [--dry-run] [--repo] [--dir] [--branch]`:
+  - idempoten (tanggal + teks);
+  - urutan hari tiap berkas dipertahankan;
+  - ringkasan hanya berupa angka (tanpa isi);
+  - setelah impor, render tiap bulan dibandingkan dengan berkas aslinya, dan `sha` berkas disimpan supaya push berikutnya memperbarui berkas yang sama.
+- [x] `/worklog sync [force]`.
+- [x] `/rekap [YYYY-MM]` tanpa LLM (hari kerja, terisi, terlewat + tanggalnya, isi per hari); > 4096 karakter → dokumen `rekap-YYYY-MM.md`; tombol 📊 di kalender. `/rekap ... ai` opsional: peringatan sekali dengan tombol konfirmasi, lewat klien LLM yang dihitung di `llm_usage`, teks dibatasi 8000 karakter.
+
+Gerbang fase (server GitHub palsu, semua lulus): sukses + debounce; `sha` basi dengan remote tidak berubah (dicoba ulang); perubahan eksternal = konflik tanpa menimpa; backoff 1/5/30 menit lalu error + satu peringatan; token tidak muncul di log; golden test; impor dry-run/idempoten/render sama.
+
+Menunggu pemilik **[PEMILIK]** (DEPLOY.md bagian 17): buat token fine-grained, isi env, jalankan impor dry-run lalu impor, matikan sinkron aplikasi worklog lama, cek entri baru muncul di repo ≤ 2 menit dan `/rekap 2026-11` cocok.

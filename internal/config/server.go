@@ -28,6 +28,11 @@ type Server struct {
 	LLMDailyRequestCap int
 	TavilyAPIKey       string
 	HolidayAPIBase     string // libur nasional + cuti bersama (Phase 7)
+	// GitHub backup of the worklog (Phase 7); off unless token and repo are set.
+	GitHubBackupToken  string
+	GitHubBackupRepo   string
+	GitHubBackupBranch string
+	GitHubBackupDir    string
 	LogLevel           slog.Level
 }
 
@@ -43,15 +48,19 @@ func LoadServer(getenv func(string) string) (*Server, error) {
 	var errs []error
 
 	c := &Server{
-		TelegramBotToken: get("TELEGRAM_BOT_TOKEN"),
-		DatabaseURL:      get("DATABASE_URL"),
-		PublicBaseURL:    get("PUBLIC_BASE_URL"),
-		HTTPAddr:         orDefault(get("HTTP_ADDR"), ":8080"),
-		BifrostBaseURL:   strings.TrimRight(orDefault(get("BIFROST_BASE_URL"), "https://gateway.ardwiinoo.my.id/v1"), "/"),
-		BifrostAPIKey:    get("BIFROST_API_KEY"),
-		LLMPrimaryModel:  get("LLM_PRIMARY_MODEL"),
-		TavilyAPIKey:     get("TAVILY_API_KEY"),
-		HolidayAPIBase:   strings.TrimRight(orDefault(get("HOLIDAY_API_BASE"), "https://tanggalmerah.upset.dev"), "/"),
+		TelegramBotToken:   get("TELEGRAM_BOT_TOKEN"),
+		DatabaseURL:        get("DATABASE_URL"),
+		PublicBaseURL:      get("PUBLIC_BASE_URL"),
+		HTTPAddr:           orDefault(get("HTTP_ADDR"), ":8080"),
+		BifrostBaseURL:     strings.TrimRight(orDefault(get("BIFROST_BASE_URL"), "https://gateway.ardwiinoo.my.id/v1"), "/"),
+		BifrostAPIKey:      get("BIFROST_API_KEY"),
+		LLMPrimaryModel:    get("LLM_PRIMARY_MODEL"),
+		TavilyAPIKey:       get("TAVILY_API_KEY"),
+		HolidayAPIBase:     strings.TrimRight(orDefault(get("HOLIDAY_API_BASE"), "https://tanggalmerah.upset.dev"), "/"),
+		GitHubBackupToken:  get("GITHUB_BACKUP_TOKEN"),
+		GitHubBackupRepo:   get("GITHUB_BACKUP_REPO"),
+		GitHubBackupBranch: orDefault(get("GITHUB_BACKUP_BRANCH"), "main"),
+		GitHubBackupDir:    get("GITHUB_BACKUP_DIR"),
 	}
 
 	for _, k := range []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_OWNER_ID", "DATABASE_URL", "PUBLIC_BASE_URL"} {

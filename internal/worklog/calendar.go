@@ -206,7 +206,10 @@ func (v MonthView) Keyboard() [][]bot.Button {
 		}
 		rows = append(rows, row)
 	}
-	return append(rows, []bot.Button{{Text: "📅 Hari ini", Data: "cal:now"}})
+	return append(rows, []bot.Button{
+		{Text: "📊 Rekap bulan ini", Data: "rek:" + v.Month.Format("2006-01")},
+		{Text: "📅 Hari ini", Data: "cal:now"},
+	})
 }
 
 var dayNames = [...]string{"Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"}
