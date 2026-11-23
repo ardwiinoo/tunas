@@ -14,10 +14,12 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/ardwiinoo/tunas/internal/agent"
 	"github.com/ardwiinoo/tunas/internal/config"
 	"github.com/ardwiinoo/tunas/internal/overlay"
+	"github.com/ardwiinoo/tunas/modes"
 )
 
 // version is set at build time via -ldflags "-X main.version=...".
@@ -65,6 +67,22 @@ func appDir(env string, fallback func() (string, error)) string {
 
 func defaultConfigPath() string {
 	return filepath.Join(appDir("APPDATA", os.UserConfigDir), "config.yaml")
+}
+
+// loadingLines reads the waiting texts from modes/mikir.yaml (embedded), with
+// %APPDATA%/tunas/modes/*.yaml overriding them without a rebuild.
+func loadingLines(log *slog.Logger) overlay.LoadingLines {
+	dir := filepath.Join(appDir("APPDATA", os.UserConfigDir), "modes")
+	ms, warns, err := modes.LoadWithOverrides(dir)
+	for _, w := range warns {
+		log.Warn("mode override ignored", "err", w)
+	}
+	if err != nil {
+		log.Warn("modes unavailable, using built-in loading texts", "err", err)
+		return overlay.DefaultLoadingLines
+	}
+	l := ms["mikir"].Lines
+	return overlay.LoadingLines{Mikir: l["mikir"], MikirLama: l["mikir_lama"], SangatLama: l["sangat_lama"]}
 }
 
 func dataDir() string { return appDir("LOCALAPPDATA", os.UserCacheDir) }
@@ -139,6 +157,8 @@ func run(cfgPath string, debug bool) error {
 	}
 
 	ov.CharacterOff = !cfg.Overlay.Enabled
+	ov.Configure(time.Duration(cfg.Loading.SlowAfterSeconds)*time.Second,
+		time.Duration(cfg.Loading.VerySlowAfterSeconds)*time.Second, cfg.Animations, loadingLines(log))
 	ov.OnPause = a.SetPaused
 	ov.OnQuit = stop
 	ov.LogPath = logPath

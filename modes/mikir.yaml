@@ -1,0 +1,23 @@
+# Display-only form shown while Tunas waits for an answer in the bubble.
+# The lines below are picked at random per phase. To change them without
+# recompiling the agent, copy this file to %APPDATA%\tunas\modes\mikir.yaml
+# and edit it there (only the "lines" you set are replaced).
+id: mikir
+name: Mikir
+voice: |
+  Kamu Tunas, makhluk kecil bertunas daun, sedang berpikir keras. Jawab singkat dan jenaka.
+  Bahasa Indonesia santai.
+sprite: mikir
+lines:
+  mikir:            # 0 s .. loading.slow_after_seconds
+    - "hmm..."
+    - "bentar ya..."
+    - "lagi mikir nih"
+    - "sebentar, kupikir dulu..."
+  mikir_lama:       # .. loading.very_slow_after_seconds
+    - "agak lama ya..."
+    - "sabar ya, lagi nanya ke server"
+    - "hmm, servernya lagi santai nih..."
+  sangat_lama:      # after that (Esc cancels)
+    - "maaf lama, masih nyari jawabannya..."
+    - "duh, lama banget ya, masih kucari..."
