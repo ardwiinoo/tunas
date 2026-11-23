@@ -420,3 +420,31 @@ func (db *DB) SyncImported(ctx context.Context, month, sha, hash string, dirty b
 		status = 'ok', last_error = null, changed_at = $5`, month, sha, hash, dirty, now)
 	return err
 }
+
+// AddWorklogFromAgent saves an entry sent by the agent. clientID makes it
+// idempotent: a resend returns the stored entry with duplicate=true.
+func (db *DB) AddWorklogFromAgent(ctx context.Context, date time.Time, text, clientID string) (e WorklogEntry, count int, duplicate bool, err error) {
+	err = pgx.BeginFunc(ctx, db.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('worklog:' || $1::text))`, date.Format(time.DateOnly)); err != nil {
+			return err
+		}
+		err := scanWorklog(tx.QueryRow(ctx, `insert into worklog_entries(entry_date, position, text, source, client_id)
+			values ($1, (select coalesce(max(position), -1) + 1 from worklog_entries where entry_date = $1), $2, 'agent', $3)
+			on conflict (client_id) do nothing returning `+worklogCols, date, text, clientID), &e)
+		if errors.Is(err, pgx.ErrNoRows) {
+			duplicate = true
+			err = scanWorklog(tx.QueryRow(ctx, `select `+worklogCols+` from worklog_entries where client_id = $1`, clientID), &e)
+		}
+		if err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `select count(*) from worklog_entries where entry_date = $1`, e.Date).Scan(&count); err != nil {
+			return err
+		}
+		if duplicate {
+			return nil
+		}
+		return markDirty(ctx, tx, date)
+	})
+	return e, count, duplicate, err
+}

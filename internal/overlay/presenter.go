@@ -16,19 +16,23 @@ import (
 type State int
 
 const (
-	Idle     State = iota // nothing on screen
-	Showing               // a notification bubble (reminder, form speech) until hideAt
-	Input                 // the text box (after Alt+Space)
-	Thinking              // mikir: message sent, waiting; input locked
-	Slow                  // mikir lama: still waiting after SlowAfter
-	VerySlow              // sangat lama: still waiting after VerySlowAfter; Esc cancels
-	Failed                // gagal: reason plus the text box to retry
-	Reply                 // berhasil: small hop, then the answer typed out
-	Confirm               // a proposal (reminder/task): Enter = Ya, Esc = Batal
+	Idle          State = iota // nothing on screen
+	Showing                    // a notification bubble (reminder, form speech) until hideAt
+	Input                      // the text box (after Alt+Space)
+	Thinking                   // mikir: message sent, waiting; input locked
+	Slow                       // mikir lama: still waiting after SlowAfter
+	VerySlow                   // sangat lama: still waiting after VerySlowAfter; Esc cancels
+	Failed                     // gagal: reason plus the text box to retry
+	Reply                      // berhasil: small hop, then the answer typed out
+	Confirm                    // a proposal (reminder/task): Enter = Ya, Esc = Batal
+	WorklogAsk                 // a worklog reminder (no focus until clicked / Alt+Space)
+	WorklogInput               // the worklog text box
+	WorklogSaving              // sending the worklog entry
 )
 
 func (s State) String() string {
-	return [...]string{"idle", "tampil", "input", "mikir", "mikir_lama", "sangat_lama", "gagal", "berhasil", "konfirmasi"}[s]
+	return [...]string{"idle", "tampil", "input", "mikir", "mikir_lama", "sangat_lama", "gagal", "berhasil", "konfirmasi",
+		"worklog_tanya", "worklog_tulis", "worklog_simpan"}[s]
 }
 
 // kind says how important a bubble is, which decides what may replace it.
@@ -110,6 +114,10 @@ type Presenter struct {
 
 	confirmID string // Confirm
 	confirmQ  string // Confirm: the interpretation shown to the owner
+
+	wlPrompt  int64     // WorklogAsk/WorklogInput: the reminder being answered (0 = none)
+	wlFocused bool      // WorklogAsk: clicked or Alt+Space, the keys work
+	hopAt     time.Time // a small hop after "Tersimpan ✓"
 }
 
 // Timings and limits.
@@ -176,7 +184,7 @@ func (p *Presenter) Visible() bool { return p.State != Idle }
 // Typing reports whether keystrokes go to the text box: the input, the
 // retry box after a failure, and the reply (the conversation continues).
 func (p *Presenter) Typing() bool {
-	return p.State == Input || p.State == Failed || (p.State == Reply && p.typed)
+	return p.State == Input || p.State == Failed || p.State == WorklogInput || (p.State == Reply && p.typed)
 }
 
 // Conversing reports whether a chat answer is up with the text box under it.
@@ -218,7 +226,7 @@ func (p *Presenter) Waiting() bool {
 // a proposal (Enter/Esc), a pending request (Esc cancels) or an answer
 // still being typed out (Enter skips).
 func (p *Presenter) KeysWanted() bool {
-	return p.Typing() || p.State == Confirm || p.Waiting()
+	return p.Typing() || p.State == Confirm || p.Waiting() || (p.State == WorklogAsk && p.wlFocused)
 }
 
 // Req is the id of the newest request; results for other ids are stale.
@@ -479,6 +487,11 @@ func (p *Presenter) enqueue(b bubble) {
 // Ignored while a request is pending (Esc cancels it instead).
 func (p *Presenter) OnHotkey(now time.Time) {
 	switch {
+	case p.State == WorklogAsk:
+		p.FocusWorklog(now)
+		return
+	case p.State == WorklogSaving:
+		return
 	case p.Typing():
 		if p.State == Reply {
 			p.revealAll = true // the reply is being typed out: show it, then type
@@ -536,8 +549,8 @@ func (p *Presenter) Backspace(now time.Time) {
 // Submit sends the draft: it returns the text to send ("" if there is
 // nothing to send, including while a request is pending).
 func (p *Presenter) Submit(now time.Time) string {
-	if !p.Typing() {
-		return ""
+	if !p.Typing() || p.State == WorklogInput {
+		return "" // the worklog box is SubmitWorklog's
 	}
 	text := strings.TrimSpace(p.Draft)
 	p.Draft = ""
@@ -579,6 +592,8 @@ func (p *Presenter) Dismiss(now time.Time) {
 // Tick advances time-based transitions.
 func (p *Presenter) Tick(now time.Time) {
 	switch p.State {
+	case WorklogAsk, WorklogInput, WorklogSaving:
+		p.worklogTick(now)
 	case Input, Failed:
 		if now.Sub(p.typedAt) >= p.idleClose() {
 			p.CancelInput(now)
@@ -635,6 +650,8 @@ func (p *Presenter) BubbleText() string {
 		return p.cur.text
 	case Showing:
 		return p.cur.text
+	case WorklogAsk, WorklogInput, WorklogSaving:
+		return p.worklogText()
 	case Confirm:
 		return p.confirmQ + "\n" + ConfirmHint
 	}
@@ -651,7 +668,12 @@ type Look struct {
 
 // Look returns the character's pose for now.
 func (p *Presenter) Look(now time.Time) Look {
+	if d := now.Sub(p.hopAt); !p.hopAt.IsZero() && !p.NoAnimations && d >= 0 && d < HopFor {
+		return Look{Form: forms.Senang, T: 10, Hop: float64(d) / float64(HopFor)}
+	}
 	switch p.State {
+	case WorklogAsk, WorklogInput:
+		return Look{Form: forms.Ingat, T: 10}
 	case Thinking, Slow, VerySlow:
 		return Look{Form: forms.Mikir, Phase: int(p.State - Thinking), T: now.Sub(p.since).Seconds()}
 	case Failed:

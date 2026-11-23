@@ -3,6 +3,7 @@
 package overlay
 
 import (
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -101,7 +102,11 @@ func (o *Overlay) trayUpdate(op uintptr) {
 	if s, _, _ := pGetSystemMetrics.Call(smCxSmIcon); s > 0 {
 		size = int(s)
 	}
-	icon := makeIcon(TrayIcon(st, size), size)
+	col := TrayColor(st)
+	if o.paused {
+		col = ColPaused
+	}
+	icon := makeIcon(TrayIconColor(col, size), size)
 	if icon == 0 {
 		o.log.Warn("tray icon could not be created")
 		return
@@ -147,22 +152,33 @@ func (o *Overlay) trayMenu() {
 		return
 	}
 	defer pDestroyMenu.Call(m) //nolint:errcheck
-	add := func(flags uintptr, id uintptr, text string) {
-		t, _ := windows.UTF16PtrFromString(text)
-		pAppendMenuW.Call(m, flags, id, uintptr(unsafe.Pointer(t))) //nolint:errcheck
+	info := MenuInfo{
+		Status: "Tunas", Queued: int(o.wlQueue.Load()), Paused: o.paused,
+		WorklogBubbles: o.tray.State.WorklogBubbles, CharacterShown: !o.charHidden,
+		HasLog: o.LogPath != "", HasConfigDir: o.tray.ConfigDir != "",
 	}
-	pauseFlags := uintptr(mfString)
-	if o.paused {
-		pauseFlags |= mfChecked
+	if o.tray.Host != nil {
+		info.Status = o.tray.Host.Status()
 	}
-	add(pauseFlags, cmdPause, MenuPause)
-	logFlags := uintptr(mfString)
-	if o.LogPath == "" {
-		logFlags |= mfGrayed // --debug logs to the console
+	if o.tray.Registry != nil && o.tray.ExePath != "" {
+		// the registry is the source of truth: read it every time the menu opens
+		on, stale, err := agent.AutostartStatus(o.tray.Registry, o.tray.ExePath)
+		info.AutostartAvail, info.AutostartOn, info.AutostartStale = err == nil, on, stale
 	}
-	add(logFlags, cmdLog, MenuLog)
-	add(mfSeparator, 0, "")
-	add(mfString, cmdQuit, MenuQuit)
+	for _, it := range TrayMenu(info) {
+		flags := uintptr(mfString)
+		switch {
+		case it.Sep:
+			flags = mfSeparator
+		case it.Grayed:
+			flags |= mfGrayed
+		}
+		if it.Checked {
+			flags |= mfChecked
+		}
+		t, _ := windows.UTF16PtrFromString(it.Text)
+		pAppendMenuW.Call(m, flags, uintptr(it.ID), uintptr(unsafe.Pointer(t))) //nolint:errcheck
+	}
 
 	var pt point32
 	pGetCursorPos.Call(uintptr(unsafe.Pointer(&pt))) //nolint:errcheck
@@ -171,24 +187,53 @@ func (o *Overlay) trayMenu() {
 	cmd, _, _ := pTrackPopupMenu.Call(m, tpmReturnCmd|tpmRightBtn|tpmNoNotify,
 		uintptr(pt.X), uintptr(pt.Y), 0, o.hwnd, 0)
 	pPostMessageW.Call(o.hwnd, wmNull, 0, 0) //nolint:errcheck
+	o.trayCommand(int(cmd), info)
+}
+
+func (o *Overlay) trayCommand(cmd int, info MenuInfo) {
+	now := time.Now()
 	switch cmd {
-	case cmdPause:
+	case CmdAutostart, CmdAutostartFix:
+		on := cmd == CmdAutostartFix || !info.AutostartOn
+		if err := agent.SetAutostart(o.tray.Registry, o.tray.ExePath, on); err != nil {
+			o.log.Warn("autostart not changed", "err", err)
+		} else {
+			o.log.Info("autostart", "on", on)
+		}
+	case CmdPause:
 		o.paused = !o.paused
 		if o.OnPause != nil {
 			o.OnPause(o.paused)
 		}
+		o.saveState()
 		o.trayUpdate(nimModify)
-	case cmdLog:
-		verb, _ := windows.UTF16PtrFromString("open")
-		file, _ := windows.UTF16PtrFromString(o.LogPath)
-		if r, _, _ := pShellExecuteW.Call(0, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(file)), 0, 0, swShowNormal); r <= 32 {
-			o.log.Warn("open log failed", "code", r)
-		}
-	case cmdQuit:
+	case CmdWorklogBubbles:
+		o.tray.State.WorklogBubbles = !o.tray.State.WorklogBubbles
+		o.saveState()
+	case CmdWriteWorklog:
+		o.p.OpenWorklog(0, now)
+		o.sync(now)
+		pSetForegroundWindow.Call(o.hwnd) //nolint:errcheck
+	case CmdCharacter:
+		o.charHidden = !o.charHidden
+		o.saveState()
+	case CmdLog:
+		o.shellOpen(o.LogPath)
+	case CmdConfigDir:
+		o.shellOpen(o.tray.ConfigDir)
+	case CmdQuit:
 		o.log.Info("quit from tray menu")
 		if o.OnQuit != nil {
 			o.OnQuit()
 		}
+	}
+}
+
+func (o *Overlay) shellOpen(path string) {
+	verb, _ := windows.UTF16PtrFromString("open")
+	file, _ := windows.UTF16PtrFromString(path)
+	if r, _, _ := pShellExecuteW.Call(0, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(file)), 0, 0, swShowNormal); r <= 32 {
+		o.log.Warn("open failed", "code", r)
 	}
 }
 

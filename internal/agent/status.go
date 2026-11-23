@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/ardwiinoo/tunas/internal/forms"
 )
 
 // ConnState is the agent's connection to the server, shown by the tray icon.
@@ -138,4 +140,58 @@ func (a *Agent) nextReminder(now time.Time) {
 	}
 	a.reminder, a.remindAt = a.reminders[0], now
 	a.reminders = a.reminders[1:]
+}
+
+// IdleFor is how long the owner has been idle at the last sample.
+func (a *Agent) IdleFor() time.Duration {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lastIdle
+}
+
+// StatusLine is the tray's first line: "Tunas · online · sinkron 12 d lalu".
+func (a *Agent) StatusLine(now time.Time) string {
+	a.mu.Lock()
+	conn, last, paused := a.conn, a.lastSync, a.paused
+	a.mu.Unlock()
+	state := map[ConnState]string{ConnOnline: "online", ConnConnecting: "menyambung…", ConnOffline: "offline"}[conn]
+	s := "Tunas · " + state
+	if paused {
+		s += " · dijeda"
+	}
+	if !last.IsZero() {
+		s += " · sinkron " + shortAgo(now.Sub(last)) + " lalu"
+	}
+	return s
+}
+
+func shortAgo(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%d d", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%d m", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%d j", int(d.Hours()))
+}
+
+// Worklog bubble rules (PRD 8.4): not when idle ≥ 10 min or asleep (tidur),
+// not in fokus unless allowed, not for a stale reminder after a reconnect.
+const (
+	WorklogIdleLimit = 10 * time.Minute
+	WorklogStale     = 30 * time.Minute
+)
+
+// ShowWorklogBubble decides whether a worklog.due may pop up on screen
+// (Telegram always has the reminder).
+func ShowWorklogBubble(e WorklogEvent, idle time.Duration, form forms.Form, inFocusOK bool) bool {
+	switch {
+	case e.Type != "worklog.due":
+		return true // closing events always pass
+	case e.Age > WorklogStale, idle >= WorklogIdleLimit, form == forms.Tidur:
+		return false
+	case form == forms.Fokus:
+		return inFocusOK
+	}
+	return true
 }

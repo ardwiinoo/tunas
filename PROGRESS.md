@@ -227,3 +227,38 @@ Menunggu pemilik: penerimaan di produksi (tiga pengingat di hari kerja, "Nanti",
 Gerbang fase (server GitHub palsu, semua lulus): sukses + debounce; `sha` basi dengan remote tidak berubah (dicoba ulang); perubahan eksternal = konflik tanpa menimpa; backoff 1/5/30 menit lalu error + satu peringatan; token tidak muncul di log; golden test; impor dry-run/idempoten/render sama.
 
 Menunggu pemilik **[PEMILIK]** (DEPLOY.md bagian 17): buat token fine-grained, isi env, jalankan impor dry-run lalu impor, matikan sinkron aplikasi worklog lama, cek entri baru muncul di repo ≤ 2 menit dan `/rekap 2026-11` cocok.
+
+### Fase 7d: Agen, tray, autostart, bubble worklog [x] (diuji langsung di laptop pemilik terhadap server lokal)
+- [x] Menu tray (8.4):
+  - Baris status `Tunas · online · sinkron N d lalu` (tidak bisa diklik) dan jumlah catatan worklog yang menunggu sinkron.
+  - ☑ Jalankan saat Windows nyala (dibaca dari registri setiap menu dibuka; "Perbarui path" bila exe pindah).
+  - ☑ Jeda pelacakan (ikon abu-abu); ☑ Pengingat worklog di layar.
+  - Tulis worklog…; Sembunyikan/Tampilkan karakter.
+  - Buka log; Buka folder konfigurasi; Keluar.
+- [x] Autostart `HKCU\...\Run\Tunas` = path exe dalam kutip + `--background` (tanpa admin; default mati). Tawaran di bubble pada run manual pertama (tidak dengan `--background`).
+- [x] `state.json` (tulis atomik) untuk tombol tray; `config.yaml` tidak disentuh. `worklog_bubble_in_focus` di config.
+- [x] Bubble worklog:
+  - `worklog.due` → form ingat, tanpa merebut fokus; klik/`Alt+Space` → Enter = tulis, N = nanti, Esc = lewati hari ini.
+  - Dilewati bila idle ≥ 10 menit, form tidur, form fokus (kecuali diizinkan), atau pengingat sudah > 30 menit (event lama setelah tersambung ulang).
+  - `worklog.closed` menutup bubble.
+  - `/log teks` di bubble `Alt+Space` langsung menyimpan dengan "Tersimpan √" + loncat kecil.
+- [x] Endpoint 6.10: `POST /v1/agent/worklog`, `GET /v1/agent/worklog/today`, `POST /v1/agent/worklog/prompts/{id}/answer`.
+- [x] Tahan offline (tambahan pemilik):
+  - `client_id` UUID per catatan, disimpan dulu di buffer SQLite (`worklog_queue`).
+  - "Tersimpan √ (menunggu sinkron)" bila server tak terjangkau.
+  - Server idempoten (`worklog_entries.client_id` unik).
+  - Antrean dikirim ulang otomatis (saat tersambung lagi + backoff) dan dihapus hanya setelah dikonfirmasi; jumlahnya tampil di tray.
+
+Gerbang fase:
+- build Windows: lulus
+- tes state machine bubble worklog, menu tray, `state.json`, penulis registri (antarmuka palsu), aturan tampil bubble: lulus
+- tes offline: kirim saat offline → sambung lagi → kirim ulang dua kali → tepat satu baris: lulus
+- ukur memori/CPU: working set 28,5 MB (sebelumnya 28,7 MB; tray ≤ +5 MB terpenuhi), CPU tersembunyi 0%
+
+Uji langsung (Windows, server lokal):
+- tawaran autostart → Enter menulis registri (`reg query` menampilkan path + `--background`); centang di tray menghapusnya;
+- bubble worklog muncul sementara jendela aktif tetap VS Code;
+- klik → Enter → tulis → tersimpan sebagai `source=agent` dan prompt `answered/agent`;
+- server mati → "menunggu sinkron" + "1 catatan worklog menunggu sinkron" di tray → server hidup → terkirim tepat 1 baris.
+
+Menunggu pemilik **[PEMILIK]**: restart laptop dengan autostart menyala (agen hidup tanpa jendela); menjawab di Telegram menutup bubble; "Jeda pelacakan" menghentikan data masuk.

@@ -24,6 +24,7 @@ type Agent struct {
 	Loading               AgentLoading        `yaml:"loading"`
 	Animations            bool                `yaml:"animations"` // false: static poses, no typing effect
 	Bubble                AgentBubble         `yaml:"bubble"`
+	WorklogBubbleInFocus  bool                `yaml:"worklog_bubble_in_focus"` // worklog bubbles also in form fokus
 }
 
 // AgentBubble configures the chat bubble.

@@ -88,7 +88,10 @@ func TestFixedTextsHaveGlyphs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	texts := []string{Cursor, "› ", "…", "↑", "↓", ConfirmHint, CancelHint, TextCancelled}
+	texts := []string{Cursor, "› ", "…", "↑", "↓", ConfirmHint, CancelHint, TextCancelled,
+		TextWorklogAsk, HintWorklogIdle, HintWorklogKeys, TextWorklogPrompt, TextWorklogSaved, TextWorklogQueued,
+		"menyimpan...", "Mau aku jalan otomatis saat laptop nyala?", "Oke, aku akan jalan otomatis saat laptop nyala.",
+		"Oke, nanti saja. Bisa dinyalakan dari menu tray.", "worklog ditolak: x"}
 	ms, err := modes.Load()
 	if err != nil {
 		t.Fatal(err)

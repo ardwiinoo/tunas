@@ -28,6 +28,7 @@ var version = "dev"
 func main() {
 	debug := flag.Bool("debug", false, "open a console window and log to it at debug level")
 	cfgPath := flag.String("config", defaultConfigPath(), "path to config.yaml")
+	background := flag.Bool("background", false, "started by Windows (autostart): no first-run questions")
 	flag.Parse()
 
 	// The release build is a GUI-subsystem exe (no console), so --debug has
@@ -40,7 +41,7 @@ func main() {
 		}
 	}
 
-	if err := run(*cfgPath, *debug); err != nil {
+	if err := run(*cfgPath, *debug, *background); err != nil {
 		if errors.Is(err, agent.ErrAlreadyRunning) {
 			fmt.Fprintln(os.Stderr, "Tunas agent sudah berjalan. Hentikan yang lama dulu (Task Manager → tunas-agent.exe).")
 		} else {
@@ -87,7 +88,7 @@ func loadingLines(log *slog.Logger) overlay.LoadingLines {
 
 func dataDir() string { return appDir("LOCALAPPDATA", os.UserCacheDir) }
 
-func run(cfgPath string, debug bool) error {
+func run(cfgPath string, debug, background bool) error {
 	// One agent per user session: two would double-count activity and draw
 	// two overlays (two bubbles on screen at once).
 	release, err := agent.SingleInstance("TunasAgent")
@@ -132,7 +133,9 @@ func run(cfgPath string, debug bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	log.Info("agent started", "version", version, "server", cfg.ServerURL, "overlay", cfg.Overlay.Enabled)
+	log.Info("agent started", "version", version, "server", cfg.ServerURL, "overlay", cfg.Overlay.Enabled, "background", background)
+	statePath := filepath.Join(appDir("APPDATA", os.UserConfigDir), "state.json")
+	uiState := agent.LoadUIState(statePath)
 	client := agent.NewClient(cfg.ServerURL, cfg.DeviceToken)
 	a := &agent.Agent{
 		Cfg:     cfg,
@@ -142,6 +145,7 @@ func run(cfgPath string, debug bool) error {
 		Log:     log,
 		Version: version,
 	}
+	a.SetPaused(uiState.TrackingPaused)
 
 	// The window also carries the tray icon, so it runs even when the
 	// character is disabled in config.yaml (tray only).
@@ -161,6 +165,21 @@ func run(cfgPath string, debug bool) error {
 		time.Duration(cfg.Loading.VerySlowAfterSeconds)*time.Second, cfg.Animations, loadingLines(log))
 	ov.SetIdleClose(time.Duration(cfg.Bubble.IdleCloseSeconds) * time.Second)
 	ov.OnPause = a.SetPaused
+	exe, _ := os.Executable()
+	ov.SetTray(overlay.TrayOptions{
+		Host:  &host{a: a, client: client, statePath: statePath, log: log},
+		State: uiState, Registry: agent.UserRunKey{}, ExePath: exe,
+		ConfigDir:      appDir("APPDATA", os.UserConfigDir),
+		OfferAutostart: !background && !uiState.AutostartOffered,
+	})
+	a.OnWorklogQueue = ov.SetWorklogQueue
+	a.OnWorklog = func(e agent.WorklogEvent) {
+		if agent.ShowWorklogBubble(e, a.IdleFor(), a.CurrentForm().Form, cfg.WorklogBubbleInFocus) {
+			ov.WorklogEvent(e)
+		} else {
+			log.Info("worklog bubble skipped (idle, tidur, fokus or stale); Telegram has it", "prompt", e.PromptID)
+		}
+	}
 	ov.OnQuit = stop
 	ov.LogPath = logPath
 	a.OnForm = ov.Notify
@@ -174,4 +193,28 @@ func run(cfgPath string, debug bool) error {
 	err = <-done
 	log.Info("agent stopped")
 	return err
+}
+
+// host is what the tray and the worklog bubble need from the agent.
+type host struct {
+	a         *agent.Agent
+	client    *agent.Client
+	statePath string
+	log       *slog.Logger
+}
+
+func (h *host) WriteWorklog(ctx context.Context, text string, promptID int64) (agent.WriteResult, error) {
+	return h.a.WriteWorklog(ctx, text, promptID)
+}
+
+func (h *host) AnswerPrompt(ctx context.Context, id int64, action string) error {
+	return h.client.AnswerPrompt(ctx, id, action)
+}
+
+func (h *host) Status() string { return h.a.StatusLine(time.Now()) }
+
+func (h *host) SaveState(st agent.UIState) {
+	if err := agent.SaveUIState(h.statePath, st); err != nil {
+		h.log.Warn("state.json not saved", "err", err)
+	}
 }

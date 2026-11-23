@@ -354,3 +354,53 @@ func (s *Service) PendingText(ctx context.Context, text string) (bot.Reply, bool
 		return s.Save(ctx, s.today(), t, "telegram", p.PromptID), true
 	}
 }
+
+// InputError is an entry the owner has to fix (empty, too long, bad date).
+type InputError struct{ Reason string }
+
+func (e *InputError) Error() string { return e.Reason }
+
+// AgentSaved is the result of SaveFromAgent.
+type AgentSaved struct {
+	ID        int64
+	Count     int  // entries on that day now
+	Duplicate bool // the same client_id was saved before (a resend)
+}
+
+// SaveFromAgent stores an entry from the laptop (bubble or offline queue).
+// date "" = today; clientID makes resends harmless; promptID closes the
+// reminder that asked (and edits its Telegram message).
+func (s *Service) SaveFromAgent(ctx context.Context, date, text, clientID string, promptID int64) (AgentSaved, error) {
+	t, err := ValidateText(text)
+	if err != nil {
+		return AgentSaved{}, &InputError{Reason: err.Error()}
+	}
+	d := s.today()
+	if date != "" {
+		if d, err = time.Parse(time.DateOnly, date); err != nil {
+			return AgentSaved{}, &InputError{Reason: "tanggal harus YYYY-MM-DD"}
+		}
+	}
+	if d.After(s.today()) {
+		return AgentSaved{}, &InputError{Reason: "tanggal belum terjadi"}
+	}
+	e, n, dup, err := s.DB.AddWorklogFromAgent(ctx, d, t, clientID)
+	if err != nil {
+		return AgentSaved{}, err
+	}
+	if !dup && s.OnSaved != nil {
+		s.OnSaved(ctx, e, "agent", promptID)
+	}
+	return AgentSaved{ID: e.ID, Count: n, Duplicate: dup}, nil
+}
+
+// AgentToday is GET /v1/agent/worklog/today.
+func (s *Service) AgentToday(ctx context.Context) (count int, lastAt time.Time, workday bool, err error) {
+	d := s.today()
+	lastAt, count, err = s.DB.LastWorklogAt(ctx, d)
+	if err != nil {
+		return 0, time.Time{}, false, err
+	}
+	r, err := s.Rules(ctx, d, d.AddDate(0, 0, 1))
+	return count, lastAt, r.IsWorkday(d), err
+}
