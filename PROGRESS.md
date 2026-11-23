@@ -182,3 +182,28 @@ Gerbang fase:
 - owner-only pada callback: lulus (`IsOwner` menolak callback akun lain)
 
 Menunggu pemilik: penerimaan di produksi (`/log tes`, `/cal` menampilkan ✅ hari ini, ketuk/edit/hapus, akun lain diabaikan).
+
+### Fase 7b: Libur dan pengingat [x] (kode selesai; penerimaan di produksi menunggu deploy)
+- [x] `internal/holidays`: klien `GET /api/holidays?year=` (bentuk respons diverifikasi langsung 2026-11-23; 404 = belum terbit; timeout 10 dtk; maks 3 percobaan) + cache di tabel `holidays`; diperbarui saat start dan tiap hari bila data > 30 hari; mulai 1 November ambil tahun depan; gagal → pakai cache; cache tahun ini kosong → satu peringatan ke pemilik.
+- [x] Pengingat slot (6.5):
+  - Pemeriksa tiap 30 dtk; slot diklaim tepat sekali (`unique (slot_date, slot)`).
+  - Hanya hari kerja; tidak dikirim bila ada catatan dalam 90 menit terakhir, bila sudah "Lewati hari ini", atau sudah mencapai maks per hari.
+  - Terlambat > 30 menit (mis. restart) → `expired` tanpa kirim.
+  - Tombol ✍️ Tulis sekarang / ⏭ Nanti / 🙈 Lewati hari ini. "Nanti" tidak menambah pesan; penutup jam 17:30 hanya bila slot terakhir ditunda (tanpa "Nanti").
+  - Pesan pengingat lama dihapus saat yang baru dikirim; catatan yang tersimpan menutup prompt aktif ("✅ Worklog sudah diisi").
+- [x] `/worklog`, `/worklog on|off`, `/worklog jam 10:30,13:30,16:30`, `/worklog penutup 17:30`.
+- [x] Event agen `worklog.due` ({prompt_id, slot, count_today}) dan `worklog.closed` ({prompt_id, via}); jawaban dari agen mengedit pesan Telegram.
+
+Gerbang fase (tes dengan jam palsu, semua lulus):
+- hari kerja vs akhir pekan;
+- libur nasional;
+- cuti bersama (tetap diingatkan);
+- override `/libur` dan `/kerja`;
+- sudah mengisi (dilewati);
+- restart di tengah slot (tanpa kirim ganda, kejar ≤ 30 menit);
+- "Nanti" tidak menambah pesan;
+- penutup hanya setelah slot terakhir ditunda;
+- API libur gagal memakai cache;
+- maks per hari.
+
+Menunggu pemilik: penerimaan di produksi (tiga pengingat di hari kerja, "Nanti", `/libur`, `/worklog off`).

@@ -27,6 +27,7 @@ type Server struct {
 	LLMFallbackModels  []string
 	LLMDailyRequestCap int
 	TavilyAPIKey       string
+	HolidayAPIBase     string // libur nasional + cuti bersama (Phase 7)
 	LogLevel           slog.Level
 }
 
@@ -50,6 +51,7 @@ func LoadServer(getenv func(string) string) (*Server, error) {
 		BifrostAPIKey:    get("BIFROST_API_KEY"),
 		LLMPrimaryModel:  get("LLM_PRIMARY_MODEL"),
 		TavilyAPIKey:     get("TAVILY_API_KEY"),
+		HolidayAPIBase:   strings.TrimRight(orDefault(get("HOLIDAY_API_BASE"), "https://tanggalmerah.upset.dev"), "/"),
 	}
 
 	for _, k := range []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_OWNER_ID", "DATABASE_URL", "PUBLIC_BASE_URL"} {

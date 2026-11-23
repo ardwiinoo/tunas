@@ -280,3 +280,74 @@ func (db *DB) ClearPending(ctx context.Context, chatID int64) error {
 	_, err := db.Pool.Exec(ctx, `delete from bot_pending where chat_id = $1`, chatID)
 	return err
 }
+
+// --- reminder prompts -------------------------------------------------------
+
+// WorklogPrompt is a row of worklog_prompts.
+type WorklogPrompt struct {
+	ID          int64
+	Date        time.Time
+	Slot        string // "10:30" | ... | "closing"
+	MessageID   *int64
+	Status      string // sent | answered | later | skipped | expired
+	SentAt      time.Time
+	AnsweredVia *string
+}
+
+const promptCols = `id, slot_date, slot, telegram_message_id, status, sent_at, answered_via`
+
+func scanPrompt(r pgx.Row, p *WorklogPrompt) error {
+	return r.Scan(&p.ID, &p.Date, &p.Slot, &p.MessageID, &p.Status, &p.SentAt, &p.AnsweredVia)
+}
+
+// ClaimPrompt records a slot exactly once (the unique key is the
+// idempotency guard). inserted=false: the slot was already handled.
+func (db *DB) ClaimPrompt(ctx context.Context, date time.Time, slot, status string, now time.Time) (WorklogPrompt, bool, error) {
+	var p WorklogPrompt
+	err := scanPrompt(db.Pool.QueryRow(ctx, `insert into worklog_prompts(slot_date, slot, status, sent_at)
+		values ($1, $2, $3, $4) on conflict (slot_date, slot) do nothing returning `+promptCols, date, slot, status, now), &p)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return p, false, nil
+	}
+	return p, err == nil, err
+}
+
+// SetPromptMessage stores the Telegram message of a prompt.
+func (db *DB) SetPromptMessage(ctx context.Context, id int64, msgID int) error {
+	_, err := db.Pool.Exec(ctx, `update worklog_prompts set telegram_message_id = $2 where id = $1`, id, msgID)
+	return err
+}
+
+// PromptsOn lists the prompts of a day in slot order of sending.
+func (db *DB) PromptsOn(ctx context.Context, date time.Time) ([]WorklogPrompt, error) {
+	rows, err := db.Pool.Query(ctx, `select `+promptCols+` from worklog_prompts where slot_date = $1 order by sent_at, id`, date)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (WorklogPrompt, error) {
+		var p WorklogPrompt
+		return p, scanPrompt(r, &p)
+	})
+}
+
+// Prompt returns one prompt.
+func (db *DB) Prompt(ctx context.Context, id int64) (WorklogPrompt, error) {
+	var p WorklogPrompt
+	err := scanPrompt(db.Pool.QueryRow(ctx, `select `+promptCols+` from worklog_prompts where id = $1`, id), &p)
+	return p, notFound(err)
+}
+
+// AnswerPrompt moves an open prompt (sent or later) to status. ErrNotFound
+// when it is not open any more (answered elsewhere, skipped, expired).
+func (db *DB) AnswerPrompt(ctx context.Context, id int64, status, via string, now time.Time) (WorklogPrompt, error) {
+	var p WorklogPrompt
+	err := scanPrompt(db.Pool.QueryRow(ctx, `update worklog_prompts set status = $2, answered_via = $3, answered_at = $4
+		where id = $1 and status in ('sent', 'later') returning `+promptCols, id, status, via, now), &p)
+	return p, notFound(err)
+}
+
+// ClearPromptMessage forgets a prompt's message after it was deleted.
+func (db *DB) ClearPromptMessage(ctx context.Context, id int64) error {
+	_, err := db.Pool.Exec(ctx, `update worklog_prompts set telegram_message_id = null where id = $1`, id)
+	return err
+}
