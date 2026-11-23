@@ -185,6 +185,9 @@ type Overlay struct {
 	bits      []byte
 	surrogate uint16
 
+	reqCancel context.CancelFunc // cancels the in-flight chat/confirm (Esc)
+	visibleMs uintptr            // timer period while visible
+
 	// tray (UI thread)
 	paused     bool
 	trayIcon   uintptr
@@ -206,12 +209,32 @@ func New(cfg config.AgentOverlay, chat ChatAPI, log *slog.Logger) (*Overlay, err
 	return &Overlay{
 		cfg: cfg, log: log, chat: chat, renderer: Procedural{},
 		formCh: make(chan forms.Output, 8), replyCh: make(chan chatResult, 1),
-		measure: Measurer(mf), scale: 1,
+		measure: Measurer(mf), scale: 1, visibleMs: visibleTick,
 	}, nil
+}
+
+// Configure sets the loading behaviour (call before Run). Without
+// animations the window redraws at the hidden rate even when visible.
+func (o *Overlay) Configure(slowAfter, verySlowAfter time.Duration, animations bool, lines LoadingLines) {
+	o.p.SlowAfter, o.p.VerySlowAfter, o.p.NoAnimations, o.p.Lines = slowAfter, verySlowAfter, !animations, lines
+	if !animations {
+		o.visibleMs = hiddenTick
+	}
+}
+
+// startCall makes the context for a chat/confirm request; Esc cancels it.
+func (o *Overlay) startCall() (context.Context, context.CancelFunc) {
+	if o.reqCancel != nil {
+		o.reqCancel()
+	}
+	ctx, cancel := context.WithTimeout(o.ctx, chatTimeout)
+	o.reqCancel = cancel
+	return ctx, cancel
 }
 
 // chatResult is the outcome of one chat or confirm call.
 type chatResult struct {
+	req       int // presenter request id; results for an older id are dropped
 	reply     string
 	confirmID string         // a proposal waiting for Enter/Esc
 	fail      agent.ChatFail // "" on success
@@ -343,11 +366,29 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 }
 
 func (o *Overlay) onChar(u uint16, now time.Time) {
+	switch {
+	case o.p.Waiting():
+		if u == 0x1B && o.p.CancelWait(now) { // Esc: give up on the request
+			if o.reqCancel != nil {
+				o.reqCancel()
+			}
+			o.log.Info("chat cancelled with Esc")
+		}
+		o.sync(now)
+		return
+	case o.p.State == Reply:
+		if u == 0x0D { // Enter: show the whole answer now
+			o.p.SkipReveal(now)
+		}
+		o.sync(now)
+		return
+	}
 	if o.p.State == Confirm {
 		switch u {
 		case 0x0D: // Enter = Ya: save, then show what really happened
 			if id := o.p.Accept(now); id != "" {
-				go o.answer(id, true)
+				ctx, cancel := o.startCall()
+				go o.answer(ctx, cancel, o.p.Req(), id, true)
 			}
 		case 0x1B: // Esc = Batal
 			o.decline(now)
@@ -363,7 +404,8 @@ func (o *Overlay) onChar(u uint16, now time.Time) {
 		o.p.Backspace(now)
 	case u == 0x0D:
 		if text := o.p.Submit(now); text != "" {
-			go o.ask(text, o.p.Form)
+			ctx, cancel := o.startCall()
+			go o.ask(ctx, cancel, o.p.Req(), text, o.p.Form)
 		}
 	case u == 0x1B:
 		o.p.CancelInput(now)
@@ -381,12 +423,14 @@ func (o *Overlay) onChar(u uint16, now time.Time) {
 
 // ask runs one chat call off the UI thread. The presenter locks input while
 // waiting, so at most one call is in flight.
-func (o *Overlay) ask(text string, f forms.Form) {
-	ctx, cancel := context.WithTimeout(o.ctx, chatTimeout)
+func (o *Overlay) ask(ctx context.Context, cancel context.CancelFunc, req int, text string, f forms.Form) {
 	defer cancel()
 	start := time.Now()
 	reply, err := o.chat.Chat(ctx, text, string(f))
-	res := chatResult{reply: reply.Reply, confirmID: reply.ConfirmID}
+	res := chatResult{req: req, reply: reply.Reply, confirmID: reply.ConfirmID}
+	if errors.Is(err, context.Canceled) && o.ctx.Err() == nil {
+		return // Esc: already handled on the UI thread
+	}
 	if err != nil {
 		res.fail = agent.ClassifyChatError(err)
 		// the token is only ever in a request header, never in err
@@ -402,8 +446,7 @@ func (o *Overlay) ask(text string, f forms.Form) {
 
 // answer sends Enter/Esc on a proposal. For Enter the real outcome (saved
 // or not) comes back as the reply; Esc was already shown locally.
-func (o *Overlay) answer(id string, yes bool) {
-	ctx, cancel := context.WithTimeout(o.ctx, chatTimeout)
+func (o *Overlay) answer(ctx context.Context, cancel context.CancelFunc, req int, id string, yes bool) {
 	defer cancel()
 	reply, err := o.chat.Confirm(ctx, id, yes)
 	if !yes {
@@ -412,7 +455,10 @@ func (o *Overlay) answer(id string, yes bool) {
 		}
 		return
 	}
-	res := chatResult{reply: reply}
+	if errors.Is(err, context.Canceled) && o.ctx.Err() == nil {
+		return
+	}
+	res := chatResult{req: req, reply: reply}
 	if err != nil {
 		res.fail = agent.ClassifyChatError(err)
 		o.log.Warn("confirm failed", "kind", string(res.fail), "err", err.Error())
@@ -427,7 +473,9 @@ func (o *Overlay) answer(id string, yes bool) {
 
 func (o *Overlay) decline(now time.Time) {
 	if id := o.p.Decline(now); id != "" {
-		go o.answer(id, false)
+		// not tied to Esc: the server should still hear about the cancel
+		ctx, cancel := context.WithTimeout(o.ctx, chatTimeout)
+		go o.answer(ctx, cancel, 0, id, false)
 	}
 }
 
@@ -444,6 +492,10 @@ func (o *Overlay) tick(now time.Time) {
 			}
 			o.p.OnForm(out, now)
 		case r := <-o.replyCh:
+			if r.req != o.p.Req() {
+				o.log.Debug("stale chat result dropped", "req", r.req)
+				continue
+			}
 			switch {
 			case r.fail != "":
 				o.p.OnChatFailed(FailText(r.fail), now)
@@ -477,7 +529,7 @@ func (o *Overlay) sync(now time.Time) {
 			o.render(now)                                                                          // content first, then show: no flash of stale frame
 			pShowWindow.Call(o.hwnd, cmd)                                                          //nolint:errcheck
 			pSetWindowPos.Call(o.hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate) //nolint:errcheck
-			pSetTimer.Call(o.hwnd, timerID, visibleTick, 0)                                        //nolint:errcheck
+			pSetTimer.Call(o.hwnd, timerID, o.visibleMs, 0)                                        //nolint:errcheck
 		} else {
 			pShowWindow.Call(o.hwnd, swHide)               //nolint:errcheck
 			pSetTimer.Call(o.hwnd, timerID, hiddenTick, 0) //nolint:errcheck
@@ -557,9 +609,17 @@ func (o *Overlay) render(now time.Time) {
 	}
 	sc := o.scene
 	sc.Lines = WithDots(sc.Lines, o.p.Dots(now))
-	a := Anim{T: now.Sub(o.formStart).Seconds(), Motion: motion,
-		Thinking: o.p.Waiting(), Think: o.p.WaitingFor(now).Seconds()}
-	Frame(o.canvas, o.renderer, sc, o.p.Form, o.face, a, o.scale)
+	if n := o.p.Revealed(now); n == 0 {
+		sc.Bubble.W = 0 // hop first, then the answer is typed out
+	} else {
+		sc.Lines = RevealLines(sc.Lines, n)
+	}
+	look := o.p.Look(now)
+	a := Anim{T: look.T, Motion: motion, Phase: look.Phase, Hop: look.Hop, Still: o.p.NoAnimations}
+	if look.Form == o.p.Form {
+		a.T = now.Sub(o.formStart).Seconds()
+	}
+	Frame(o.canvas, o.renderer, sc, look.Form, o.face, a, o.scale)
 	o.present()
 }
 

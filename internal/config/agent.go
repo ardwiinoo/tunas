@@ -21,6 +21,14 @@ type Agent struct {
 	AppCategories         map[string][]string `yaml:"app_categories"`
 	Forms                 AgentForms          `yaml:"forms"`
 	Overlay               AgentOverlay        `yaml:"overlay"`
+	Loading               AgentLoading        `yaml:"loading"`
+	Animations            bool                `yaml:"animations"` // false: static poses, no typing effect
+}
+
+// AgentLoading sets when the bubble's waiting texts change.
+type AgentLoading struct {
+	SlowAfterSeconds     int `yaml:"slow_after_seconds"`      // "mikir" → "mikir lama"
+	VerySlowAfterSeconds int `yaml:"very_slow_after_seconds"` // → "sangat lama" (Esc to cancel)
 }
 
 // AgentForms holds form state-machine thresholds.
@@ -71,7 +79,9 @@ func DefaultAgent() *Agent {
 			ReminderDisplaySeconds: 15,
 			TegurDisplaySeconds:    10,
 		},
-		Overlay: AgentOverlay{Enabled: true, Corner: "bottom-right", MarginX: 24, MarginY: 24},
+		Overlay:    AgentOverlay{Enabled: true, Corner: "bottom-right", MarginX: 24, MarginY: 24},
+		Loading:    AgentLoading{SlowAfterSeconds: 3, VerySlowAfterSeconds: 8},
+		Animations: true,
 	}
 }
 
@@ -138,6 +148,9 @@ func (c *Agent) Validate() error {
 	case "bottom-right", "bottom-left", "top-right", "top-left":
 	default:
 		errs = append(errs, fmt.Errorf("overlay.corner %q invalid", c.Overlay.Corner))
+	}
+	if l := c.Loading; l.SlowAfterSeconds < 1 || l.VerySlowAfterSeconds <= l.SlowAfterSeconds || l.VerySlowAfterSeconds > 30 {
+		errs = append(errs, errors.New("loading: need 1 <= slow_after_seconds < very_slow_after_seconds <= 30"))
 	}
 	return errors.Join(errs...)
 }

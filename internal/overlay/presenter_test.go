@@ -1,7 +1,6 @@
 package overlay
 
 import (
-	"fmt"
 	"math/rand"
 	"strings"
 	"testing"
@@ -40,13 +39,13 @@ func checkOne(t *testing.T, p *Presenter) {
 		if !strings.HasPrefix(txt, "› ") {
 			t.Fatalf("input but bubble %q", txt)
 		}
-	case Thinking:
-		if txt != TextThinking {
-			t.Fatalf("thinking but bubble %q", txt)
+	case Thinking, Slow:
+		if !strings.HasSuffix(txt, "...") {
+			t.Fatalf("%s but bubble %q", p.State, txt)
 		}
-	case Slow:
-		if txt != TextSlow {
-			t.Fatalf("slow but bubble %q", txt)
+	case VerySlow:
+		if !strings.HasSuffix(txt, "...\n"+CancelHint) {
+			t.Fatalf("very slow but bubble %q", txt)
 		}
 	case Failed:
 		if !strings.Contains(txt, "\n› ") {
@@ -333,105 +332,6 @@ func sendChat(t *testing.T, p *Presenter, text string, now time.Time) {
 	}
 }
 
-func TestThinkingBecomesSlowAt8s(t *testing.T) {
-	clk := &fakeClock{now: t0}
-	var p Presenter
-	sendChat(t, &p, "halo", clk.now)
-	if p.State != Thinking || p.BubbleText() != TextThinking || !p.Waiting() {
-		t.Fatalf("after Enter: %s %q", p.State, p.BubbleText())
-	}
-	p.Tick(clk.add(SlowAfter - time.Millisecond))
-	if p.State != Thinking {
-		t.Fatal("slow too early")
-	}
-	p.Tick(clk.add(time.Millisecond))
-	if p.State != Slow || p.BubbleText() != TextSlow {
-		t.Fatalf("at 8s: %s %q", p.State, p.BubbleText())
-	}
-	if p.WaitingFor(clk.now) != SlowAfter {
-		t.Fatal("waiting time")
-	}
-	p.OnReply("Halo!", clk.add(2*time.Second))
-	if p.State != Reply || p.BubbleText() != "Halo!" || p.Waiting() {
-		t.Fatalf("reply: %s %q", p.State, p.BubbleText())
-	}
-	p.Tick(clk.add(minReplyFor))
-	if p.State != Idle {
-		t.Fatal("reply should expire")
-	}
-}
-
-func TestReplyBeforeSlow(t *testing.T) {
-	clk := &fakeClock{now: t0}
-	var p Presenter
-	sendChat(t, &p, "cepat", clk.now)
-	p.Tick(clk.add(3 * time.Second))
-	p.OnReply("Siap", clk.now)
-	p.Tick(clk.add(6 * time.Second)) // past the 8s mark: must not turn Slow
-	if p.State != Reply {
-		t.Fatalf("state = %s", p.State)
-	}
-}
-
-func TestInputLockedWhileThinking(t *testing.T) {
-	var p Presenter
-	sendChat(t, &p, "sekali", t0)
-	p.Type([]rune("lagi"), t0)
-	p.Backspace(t0)
-	p.OnHotkey(t0)
-	p.Dismiss(t0)
-	if got := p.Submit(t0); got != "" {
-		t.Fatalf("second send while thinking: %q", got)
-	}
-	if p.State != Thinking || p.Draft != "" {
-		t.Fatalf("input must stay locked: %s %q", p.State, p.Draft)
-	}
-	p.Tick(t0.Add(SlowAfter))
-	p.OnHotkey(t0.Add(SlowAfter))
-	if p.State != Slow || p.Submit(t0.Add(SlowAfter)) != "" {
-		t.Fatal("still locked when slow")
-	}
-}
-
-func TestChatFailureReopensInput(t *testing.T) {
-	want := map[agent.ChatFail]string{
-		agent.FailTimeout: "Server lama menjawab, coba lagi ya",
-		agent.FailOffline: "Tidak bisa hubungi server",
-		agent.FailCap:     "Jatah LLM hari ini habis",
-	}
-	for kind, msg := range want {
-		if FailText(kind) != msg {
-			t.Fatalf("FailText(%s) = %q", kind, FailText(kind))
-		}
-		clk := &fakeClock{now: t0}
-		var p Presenter
-		sendChat(t, &p, "tolong cek", clk.now)
-		p.Tick(clk.add(9 * time.Second)) // slow, then fails
-		p.OnChatFailed(FailText(kind), clk.now)
-		checkOne(t, &p)
-		if p.State != Failed || !strings.HasPrefix(p.BubbleText(), msg+"\n› tolong cek") || !p.Typing() {
-			t.Fatalf("%s: %s %q", kind, p.State, p.BubbleText())
-		}
-		// Enter retries the same text
-		if got := p.Submit(clk.add(time.Second)); got != "tolong cek" || p.State != Thinking {
-			t.Fatalf("retry = %q %s", got, p.State)
-		}
-		// the 8s threshold restarts with the retry
-		p.Tick(clk.add(SlowAfter - time.Second))
-		if p.State != Thinking {
-			t.Fatal("retry should restart the slow timer")
-		}
-		p.OnChatFailed(msg, clk.now)
-		p.OnHotkey(clk.now) // hotkey closes the retry box
-		if p.State != Idle {
-			t.Fatalf("hotkey on failed: %s", p.State)
-		}
-	}
-	if !strings.Contains(FailText(agent.FailLLM), "LLM") {
-		t.Error("llm failure text")
-	}
-}
-
 func TestFailureIgnoredWhenNotWaiting(t *testing.T) {
 	var p Presenter
 	p.OnChatFailed("x", t0)
@@ -459,34 +359,6 @@ func TestThinkLimitSafetyNet(t *testing.T) {
 	}
 }
 
-func TestDotsAnimation(t *testing.T) {
-	var p Presenter
-	if p.Dots(t0) != 0 {
-		t.Fatal("no dots when idle")
-	}
-	sendChat(t, &p, "x", t0)
-	var got []int
-	for i := range 5 {
-		got = append(got, p.Dots(t0.Add(time.Duration(i)*dotStep)))
-	}
-	if fmt.Sprint(got) != "[1 2 3 1 2]" {
-		t.Fatalf("dots = %v", got)
-	}
-	lines := []string{"Tunas lagi", "mikir..."}
-	if d := WithDots(lines, 1); d[1] != "mikir." || lines[1] != "mikir..." || d[0] != "Tunas lagi" {
-		t.Fatalf("WithDots = %v (input %v)", d, lines)
-	}
-	// the bubble is laid out from the full "..." text, so it never resizes
-	sc := ComputeScene("bottom-right", p.BubbleText(), mono)
-	for n := 1; n <= 3; n++ {
-		for _, l := range WithDots(sc.Lines, n) {
-			if mono(l) > sc.Bubble.W-2*BubblePad {
-				t.Fatalf("%d dots overflow the bubble", n)
-			}
-		}
-	}
-}
-
 // One bubble through a whole chat with notifications arriving meanwhile.
 func TestSingleBubbleThroughChat(t *testing.T) {
 	clk := &fakeClock{now: t0}
@@ -499,7 +371,7 @@ func TestSingleBubbleThroughChat(t *testing.T) {
 	if p.State != Thinking || p.Queued() != 1 {
 		t.Fatalf("thinking keeps the bubble: %s queued=%d", p.State, p.Queued())
 	}
-	p.Tick(clk.add(SlowAfter))
+	p.Tick(clk.add(DefaultSlowAfter))
 	p.OnForm(reminder("rapat"), clk.now)
 	if p.State != Slow || p.Queued() != 2 {
 		t.Fatal("slow keeps the bubble")

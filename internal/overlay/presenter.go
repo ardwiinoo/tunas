@@ -1,6 +1,7 @@
 package overlay
 
 import (
+	"math/rand/v2"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -18,15 +19,16 @@ const (
 	Idle     State = iota // nothing on screen
 	Showing               // a notification bubble (reminder, form speech) until hideAt
 	Input                 // the text box (after Alt+Space)
-	Thinking              // message sent, waiting for the reply; input locked
-	Slow                  // still waiting after SlowAfter; input locked
-	Failed                // the chat failed: reason plus the text box to retry
-	Reply                 // the chat reply until hideAt
+	Thinking              // mikir: message sent, waiting; input locked
+	Slow                  // mikir lama: still waiting after SlowAfter
+	VerySlow              // sangat lama: still waiting after VerySlowAfter; Esc cancels
+	Failed                // gagal: reason plus the text box to retry
+	Reply                 // berhasil: small hop, then the answer typed out
 	Confirm               // a proposal (reminder/task): Enter = Ya, Esc = Batal
 )
 
 func (s State) String() string {
-	return [...]string{"idle", "showing", "input", "thinking", "slow", "failed", "reply", "confirm"}[s]
+	return [...]string{"idle", "tampil", "input", "mikir", "mikir_lama", "sangat_lama", "gagal", "berhasil", "konfirmasi"}[s]
 }
 
 // kind says how important a bubble is, which decides what may replace it.
@@ -44,34 +46,61 @@ type bubble struct {
 	d    time.Duration
 }
 
+// LoadingLines are the playful texts shown while waiting, one list per
+// phase (modes/mikir.yaml, overridable without recompiling).
+type LoadingLines struct {
+	Mikir      []string
+	MikirLama  []string
+	SangatLama []string
+}
+
+// DefaultLoadingLines is used when no lines are configured.
+var DefaultLoadingLines = LoadingLines{
+	Mikir:      []string{"hmm...", "bentar ya...", "lagi mikir nih"},
+	MikirLama:  []string{"agak lama ya...", "sabar ya, lagi nanya ke server"},
+	SangatLama: []string{"maaf lama, masih nyari jawabannya..."},
+}
+
 // Presenter is the bubble manager. It is driven by form changes, the hotkey,
-// typing and chat results on the UI thread; the clock is passed in, so the
+// keys and chat results on the UI thread; the clock is passed in, so the
 // whole machine is testable with a fake clock.
 //
-//	Idle     --speech-->  Showing          Idle/Showing --hotkey--> Input
-//	Input    --enter-->   Thinking         Input --esc/hotkey/timeout--> next
-//	Thinking --8s-->      Slow             Thinking/Slow --reply--> Reply
-//	Thinking/Slow --error--> Failed (reason + previous text, Enter retries)
-//	Thinking/Slow --ThinkLimit--> Failed (safety net if no result arrives)
+//	Idle/Showing --hotkey--> Input --Enter--> Thinking (mikir)
+//	Thinking --SlowAfter--> Slow (mikir lama) --VerySlowAfter--> VerySlow (sangat lama)
+//	Thinking/Slow/VerySlow --reply--> Reply (hop, then typed out; Enter skips)
+//	Thinking/Slow/VerySlow --error--> Failed (sad pose, reason, text box again)
+//	Thinking/Slow/VerySlow --Esc--> next (request cancelled, result ignored)
+//	Thinking/Slow/VerySlow --proposal--> Confirm --Enter--> Thinking --> Reply
+//	Confirm --Esc/hotkey--> Reply("Oke, dibatalkan.")
 //	Showing/Reply --timeout/click--> next queued bubble, else Idle
-//	Thinking/Slow --proposal--> Confirm --Enter--> Thinking (saving) --> Reply
-//	Confirm --Esc/hotkey--> Reply("Oke, dibatalkan.")   Confirm --timeout--> next
 //
-// While thinking the input is locked: typing, Enter and the hotkey are
-// ignored, so a message cannot be sent twice. Reminders and replies that
-// arrive while another important bubble is up are queued (at most MaxQueue)
-// and shown one after another; form chatter is replaced in place or dropped.
+// While waiting the input is locked, so a message cannot be sent twice.
+// Every request gets an id (Req); results for another id are stale.
 type Presenter struct {
-	State   State
-	Form    forms.Form
-	Draft   string // text being typed (Input, Failed)
-	cur     bubble // Showing, Reply
-	failMsg string // Failed
-	sent    string // last submitted text, restored on failure
-	hideAt  time.Time
-	typedAt time.Time // last input activity
-	since   time.Time // when Thinking started
-	queue   []bubble
+	State State
+	Form  forms.Form
+	Draft string // text being typed (Input, Failed)
+
+	// Settings (zero values = defaults).
+	SlowAfter     time.Duration // default 3 s
+	VerySlowAfter time.Duration // default 8 s
+	NoAnimations  bool          // static poses, no typing effect
+	Lines         LoadingLines  // default DefaultLoadingLines
+	Pick          func(n int) int
+
+	cur       bubble // Showing, Reply
+	failMsg   string // Failed
+	sent      string // last submitted text, restored on failure
+	hideAt    time.Time
+	typedAt   time.Time // last input activity
+	since     time.Time // when the current wait started
+	phaseLine string    // the text picked for the current waiting phase
+	req       int       // id of the newest request
+	shownAt   time.Time // Reply: when the answer arrived
+	typed     bool      // Reply: a chat answer (hop + typing effect), not a plain bubble
+	revealAll bool      // Reply: typing effect skipped or off
+	failedAt  time.Time // Failed: when it failed (sad pose)
+	queue     []bubble
 
 	confirmID string // Confirm
 	confirmQ  string // Confirm: the interpretation shown to the owner
@@ -79,56 +108,55 @@ type Presenter struct {
 
 // Timings and limits.
 const (
-	DefaultShow  = 6 * time.Second
-	minReplyFor  = 8 * time.Second
-	maxReplyFor  = 30 * time.Second
-	SlowAfter    = 8 * time.Second  // Thinking becomes Slow
-	ThinkLimit   = 40 * time.Second // give up waiting (the chat call itself times out sooner)
-	dotStep      = 400 * time.Millisecond
-	MaxDraftLen  = 300
-	MaxQueue     = 4
-	InputTimeout = 60 * time.Second // the text box closes after this long without typing
+	DefaultShow          = 6 * time.Second
+	minReplyFor          = 8 * time.Second
+	maxReplyFor          = 30 * time.Second
+	DefaultSlowAfter     = 3 * time.Second
+	DefaultVerySlowAfter = 8 * time.Second
+	ThinkLimit           = 40 * time.Second // give up waiting (the chat call itself times out sooner)
+	HopFor               = 400 * time.Millisecond
+	SadFor               = 1500 * time.Millisecond
+	TypeRate             = 30 // runes per second
+	dotStep              = 400 * time.Millisecond
+	MaxDraftLen          = 300
+	MaxQueue             = 4
+	InputTimeout         = 60 * time.Second // the text box closes after this long without typing
 )
 
-// ConfirmHint is shown under a proposal.
-const ConfirmHint = "Enter = Ya · Esc = Batal"
-
-// TextCancelled is shown after Esc on a proposal.
-const TextCancelled = "Oke, dibatalkan."
-
-// Bubble texts. Every character must exist in the embedded font (see
+// Fixed bubble texts. Every character must exist in the embedded font (see
 // TestFixedTextsHaveGlyphs); U+258F, for example, does not.
 const (
-	Cursor       = "|"
-	TextThinking = "Tunas lagi mikir..."
-	TextSlow     = "Agak lama, sebentar ya..."
+	Cursor        = "|"
+	ConfirmHint   = "Enter = Ya · Esc = Batal"
+	CancelHint    = "Esc = batal"
+	TextCancelled = "Oke, dibatalkan."
 )
 
 // FailText is the bubble text for a failed chat.
 func FailText(f agent.ChatFail) string {
 	switch f {
 	case agent.FailTimeout:
-		return "Server lama menjawab, coba lagi ya"
+		return "server lama menjawab, coba lagi?"
 	case agent.FailOffline:
-		return "Tidak bisa hubungi server"
+		return "tidak bisa hubungi server"
 	case agent.FailCap:
-		return "Jatah LLM hari ini habis"
+		return "jatah LLM hari ini habis"
 	case agent.FailLLM:
-		return "LLM sedang bermasalah, coba lagi"
+		return "LLM sedang bermasalah, coba lagi?"
 	case agent.FailBlocked:
-		return "Model AI diblokir gateway (cek konfigurasi)"
+		return "model AI diblokir gateway (cek konfigurasi)"
 	case agent.FailQuota:
-		return "Kuota provider AI habis, coba nanti"
+		return "kuota provider AI habis, coba nanti"
 	case agent.FailDown:
-		return "Provider AI sedang down, coba lagi"
+		return "provider AI sedang down, coba lagi?"
 	case agent.FailDisabled:
 		return "AI belum diaktifkan di server"
 	case agent.FailAuth:
-		return "Perangkat ditolak server (cek device_token)"
+		return "perangkat ditolak server (cek device_token)"
 	case agent.FailBusy:
-		return "Terlalu sering, tunggu sebentar ya"
+		return "terlalu sering, tunggu sebentar ya"
 	}
-	return "Server sedang bermasalah, coba lagi"
+	return "server sedang bermasalah, coba lagi?"
 }
 
 // Visible reports whether the window should be on screen.
@@ -137,14 +165,22 @@ func (p *Presenter) Visible() bool { return p.State != Idle }
 // Typing reports whether keystrokes go to the text box.
 func (p *Presenter) Typing() bool { return p.State == Input || p.State == Failed }
 
-// KeysWanted reports whether the window needs keyboard focus (text box or
-// a proposal waiting for Enter/Esc).
-func (p *Presenter) KeysWanted() bool { return p.Typing() || p.State == Confirm }
+// Waiting reports whether a chat result is pending (input locked).
+func (p *Presenter) Waiting() bool {
+	return p.State == Thinking || p.State == Slow || p.State == VerySlow
+}
 
-// Waiting reports whether a chat reply is pending (input locked).
-func (p *Presenter) Waiting() bool { return p.State == Thinking || p.State == Slow }
+// KeysWanted reports whether the window needs keyboard focus: the text box,
+// a proposal (Enter/Esc), a pending request (Esc cancels) or an answer
+// still being typed out (Enter skips).
+func (p *Presenter) KeysWanted() bool {
+	return p.Typing() || p.State == Confirm || p.Waiting() || (p.State == Reply && p.typed && !p.revealAll)
+}
 
-// WaitingFor is how long the current chat has been pending.
+// Req is the id of the newest request; results for other ids are stale.
+func (p *Presenter) Req() int { return p.req }
+
+// WaitingFor is how long the current request has been pending.
 func (p *Presenter) WaitingFor(now time.Time) time.Duration {
 	if !p.Waiting() {
 		return 0
@@ -152,16 +188,71 @@ func (p *Presenter) WaitingFor(now time.Time) time.Duration {
 	return now.Sub(p.since)
 }
 
-// Dots is the number of animated dots (1..3) while waiting, else 0.
+// Dots is the number of animated dots (1..3) while waiting, else 0. Without
+// animations it stays at 3.
 func (p *Presenter) Dots(now time.Time) int {
 	if !p.Waiting() {
 		return 0
+	}
+	if p.NoAnimations {
+		return 3
 	}
 	return 1 + int(now.Sub(p.since)/dotStep)%3
 }
 
 // Queued returns the number of bubbles waiting.
 func (p *Presenter) Queued() int { return len(p.queue) }
+
+func (p *Presenter) slowAfter() time.Duration {
+	if p.SlowAfter > 0 {
+		return p.SlowAfter
+	}
+	return DefaultSlowAfter
+}
+
+func (p *Presenter) verySlowAfter() time.Duration {
+	if p.VerySlowAfter > p.slowAfter() {
+		return p.VerySlowAfter
+	}
+	return max(DefaultVerySlowAfter, p.slowAfter()+time.Second)
+}
+
+// pickLine chooses a random line for a waiting phase.
+func (p *Presenter) pickLine(lines, fallback []string) string {
+	if len(lines) == 0 {
+		lines = fallback
+	}
+	i := 0
+	if len(lines) > 1 {
+		if p.Pick != nil {
+			i = p.Pick(len(lines)) % len(lines)
+		} else {
+			i = rand.IntN(len(lines))
+		}
+	}
+	// always laid out with "..." so the animated dots never resize the bubble
+	return strings.TrimRight(lines[i], ".…") + "..."
+}
+
+func (p *Presenter) enterWait(s State) {
+	p.State = s
+	switch s {
+	case Thinking:
+		p.phaseLine = p.pickLine(p.Lines.Mikir, DefaultLoadingLines.Mikir)
+	case Slow:
+		p.phaseLine = p.pickLine(p.Lines.MikirLama, DefaultLoadingLines.MikirLama)
+	case VerySlow:
+		p.phaseLine = p.pickLine(p.Lines.SangatLama, DefaultLoadingLines.SangatLama)
+	}
+}
+
+// startRequest moves to Thinking for a new request and returns its id.
+func (p *Presenter) startRequest(now time.Time) {
+	p.req++
+	p.since, p.failMsg = now, ""
+	p.cur, p.hideAt = bubble{}, time.Time{}
+	p.enterWait(Thinking)
+}
 
 // OnForm reacts to a new state-machine output. The pose always follows the
 // form; only forms with something to say produce a bubble.
@@ -184,15 +275,58 @@ func (p *Presenter) OnForm(out forms.Output, now time.Time) {
 	p.offer(b, now)
 }
 
-// OnReply delivers a chat reply.
+// OnReply delivers a chat reply: a small hop, then the answer is typed out.
 func (p *Presenter) OnReply(text string, now time.Time) {
-	d := max(minReplyFor, time.Duration(utf8.RuneCountInString(text))*60*time.Millisecond)
-	b := bubble{text: text, kind: kindReply, d: min(d, maxReplyFor)}
+	b := bubble{text: text, kind: kindReply, d: replyFor(text)}
 	if p.Waiting() {
-		p.show(b, now)
+		p.showReply(b, now)
 		return
 	}
 	p.offer(b, now) // a late reply: treat like any other important bubble
+}
+
+func replyFor(text string) time.Duration {
+	d := max(minReplyFor, time.Duration(utf8.RuneCountInString(text))*60*time.Millisecond)
+	return min(d, maxReplyFor)
+}
+
+func (p *Presenter) showReply(b bubble, now time.Time) {
+	p.State, p.cur, p.shownAt, p.typed, p.revealAll = Reply, b, now, true, p.NoAnimations
+	p.hideAt = now.Add(p.revealDur(b.text) + b.d)
+}
+
+// revealDur is how long the hop and the typing effect take.
+func (p *Presenter) revealDur(text string) time.Duration {
+	if p.revealAll {
+		return 0
+	}
+	return HopFor + time.Duration(utf8.RuneCountInString(text))*time.Second/TypeRate
+}
+
+// Revealed is how many runes of the bubble text are visible: -1 for all,
+// 0 during the hop (no bubble yet), then growing at TypeRate.
+func (p *Presenter) Revealed(now time.Time) int {
+	if p.State != Reply || !p.typed || p.revealAll {
+		return -1
+	}
+	t := now.Sub(p.shownAt) - HopFor
+	if t < 0 {
+		return 0
+	}
+	n := int(t * TypeRate / time.Second)
+	if n >= utf8.RuneCountInString(p.cur.text) {
+		return -1
+	}
+	return n
+}
+
+// SkipReveal shows the whole answer at once (Enter while it is typed).
+func (p *Presenter) SkipReveal(now time.Time) {
+	if p.State != Reply || p.revealAll {
+		return
+	}
+	p.revealAll = true
+	p.hideAt = now.Add(p.cur.d)
 }
 
 // OnProposal shows the server's interpretation of a reminder/task request
@@ -211,7 +345,8 @@ func (p *Presenter) Accept(now time.Time) string {
 		return ""
 	}
 	id := p.confirmID
-	p.State, p.since, p.sent, p.confirmID = Thinking, now, "", ""
+	p.confirmID, p.sent = "", ""
+	p.startRequest(now)
 	return id
 }
 
@@ -221,13 +356,14 @@ func (p *Presenter) Decline(now time.Time) string {
 		return ""
 	}
 	id := p.confirmID
-	p.confirmID = ""
+	p.confirmID, p.sent = "", ""
 	p.show(bubble{text: TextCancelled, kind: kindReply, d: DefaultShow}, now)
 	return id
 }
 
-// OnChatFailed reports a failed chat with a user-facing reason. The text box
-// reopens with the message that was sent, so Enter retries it.
+// OnChatFailed reports a failed chat with a user-facing reason: a short sad
+// pose, the reason, and the text box again with the message that was sent
+// (Enter retries).
 func (p *Presenter) OnChatFailed(reason string, now time.Time) {
 	if !p.Waiting() {
 		return // nobody is waiting for it any more
@@ -236,8 +372,19 @@ func (p *Presenter) OnChatFailed(reason string, now time.Time) {
 }
 
 func (p *Presenter) fail(reason string, now time.Time) {
-	p.State, p.failMsg, p.Draft = Failed, reason, p.sent
+	p.State, p.failMsg, p.Draft, p.failedAt = Failed, reason, p.sent, now
 	p.cur, p.hideAt, p.typedAt = bubble{}, time.Time{}, now
+}
+
+// CancelWait abandons the pending request (Esc while loading). It returns
+// false when nothing was pending. Results of the old request are ignored.
+func (p *Presenter) CancelWait(now time.Time) bool {
+	if !p.Waiting() {
+		return false
+	}
+	p.req++ // the old result is stale now
+	p.next(now)
+	return true
 }
 
 // offer routes a new notification or late reply.
@@ -252,7 +399,7 @@ func (p *Presenter) offer(b bubble, now time.Time) {
 		case b.kind != kindChatter:
 			p.enqueue(b)
 		}
-	default: // Input, Thinking, Slow, Failed, Reply
+	default: // Input, waiting, Failed, Reply, Confirm
 		if b.kind != kindChatter {
 			p.enqueue(b)
 		}
@@ -275,13 +422,13 @@ func (p *Presenter) enqueue(b bubble) {
 }
 
 // OnHotkey opens the text box, or closes it when already open. Ignored
-// while a reply is pending.
+// while a request is pending (Esc cancels it instead).
 func (p *Presenter) OnHotkey(now time.Time) {
 	switch p.State {
 	case Input, Failed:
 		p.CancelInput(now)
 		return
-	case Thinking, Slow:
+	case Thinking, Slow, VerySlow, Confirm:
 		return
 	case Showing, Reply:
 		if p.cur.kind == kindReminder || p.cur.kind == kindReply {
@@ -294,7 +441,7 @@ func (p *Presenter) OnHotkey(now time.Time) {
 			}
 		}
 	}
-	p.State, p.Draft, p.cur, p.hideAt = Input, "", bubble{}, time.Time{}
+	p.State, p.Draft, p.cur, p.hideAt, p.sent = Input, "", bubble{}, time.Time{}, ""
 	p.typedAt = now
 }
 
@@ -328,7 +475,7 @@ func (p *Presenter) Backspace(now time.Time) {
 }
 
 // Submit sends the draft: it returns the text to send ("" if there is
-// nothing to send, including while a reply is still pending).
+// nothing to send, including while a request is pending).
 func (p *Presenter) Submit(now time.Time) string {
 	if !p.Typing() {
 		return ""
@@ -339,8 +486,8 @@ func (p *Presenter) Submit(now time.Time) string {
 		p.next(now)
 		return ""
 	}
-	p.State, p.sent, p.since, p.failMsg = Thinking, text, now, ""
-	p.cur, p.hideAt = bubble{}, time.Time{}
+	p.sent = text
+	p.startRequest(now)
 	return text
 }
 
@@ -367,12 +514,15 @@ func (p *Presenter) Tick(now time.Time) {
 		if now.Sub(p.typedAt) >= InputTimeout {
 			p.CancelInput(now)
 		}
-	case Thinking, Slow:
+	case Thinking, Slow, VerySlow:
 		w := now.Sub(p.since)
-		if w >= ThinkLimit {
+		switch {
+		case w >= ThinkLimit:
 			p.fail(FailText(agent.FailTimeout), now)
-		} else if w >= SlowAfter {
-			p.State = Slow
+		case w >= p.verySlowAfter() && p.State != VerySlow:
+			p.enterWait(VerySlow)
+		case w >= p.slowAfter() && w < p.verySlowAfter() && p.State == Thinking:
+			p.enterWait(Slow)
 		}
 	case Showing, Reply:
 		if !now.Before(p.hideAt) {
@@ -387,24 +537,50 @@ func (p *Presenter) Tick(now time.Time) {
 }
 
 // BubbleText is the text the one bubble lays out ("" = no bubble). While
-// waiting it ends in "..."; the renderer animates the dots (see WithDots)
-// so the bubble keeps its size.
+// waiting it ends in "..." and the renderer animates the dots (WithDots);
+// a reply is laid out in full and typed out by the renderer (RevealLines),
+// so the bubble never changes size.
 func (p *Presenter) BubbleText() string {
 	switch p.State {
 	case Input:
 		return "› " + p.Draft + Cursor
 	case Failed:
 		return p.failMsg + "\n› " + p.Draft + Cursor
-	case Thinking:
-		return TextThinking
-	case Slow:
-		return TextSlow
+	case Thinking, Slow:
+		return p.phaseLine
+	case VerySlow:
+		return p.phaseLine + "\n" + CancelHint
 	case Showing, Reply:
 		return p.cur.text
 	case Confirm:
 		return p.confirmQ + "\n" + ConfirmHint
 	}
 	return ""
+}
+
+// Look is what the renderer shows for the character right now.
+type Look struct {
+	Form  forms.Form // a display form (Mikir, Sedih, Senang for the hop) or the agent's form
+	Phase int        // Mikir: 0 mikir, 1 mikir lama, 2 sangat lama
+	T     float64    // seconds in this look (drives its animation)
+	Hop   float64    // success hop progress in (0,1), 0 = none
+}
+
+// Look returns the character's pose for now.
+func (p *Presenter) Look(now time.Time) Look {
+	switch p.State {
+	case Thinking, Slow, VerySlow:
+		return Look{Form: forms.Mikir, Phase: int(p.State - Thinking), T: now.Sub(p.since).Seconds()}
+	case Failed:
+		if d := now.Sub(p.failedAt); d < SadFor {
+			return Look{Form: forms.Sedih, T: d.Seconds()}
+		}
+	case Reply:
+		if d := now.Sub(p.shownAt); p.typed && !p.NoAnimations && d < HopFor {
+			return Look{Form: forms.Senang, T: 10, Hop: float64(d) / float64(HopFor)}
+		}
+	}
+	return Look{Form: p.Form}
 }
 
 // WithDots returns lines with the trailing dots of the last line set to n
@@ -414,8 +590,31 @@ func WithDots(lines []string, n int) []string {
 		return lines
 	}
 	out := append([]string(nil), lines...)
-	last := strings.TrimRight(out[len(out)-1], ".")
-	out[len(out)-1] = last + strings.Repeat(".", n)
+	// the dots belong to the phase text: with a hint line under it, that is
+	// the line before the hint
+	i := len(out) - 1
+	if i > 0 && out[i] == CancelHint {
+		i--
+	}
+	out[i] = strings.TrimRight(out[i], ".") + strings.Repeat(".", n)
+	return out
+}
+
+// RevealLines keeps the first n runes of the wrapped lines (n < 0 = all).
+func RevealLines(lines []string, n int) []string {
+	if n < 0 {
+		return lines
+	}
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		rs := []rune(l)
+		if n <= len(rs) {
+			out = append(out, string(rs[:n]))
+			break
+		}
+		out = append(out, l)
+		n -= len(rs)
+	}
 	return out
 }
 
@@ -424,11 +623,13 @@ func (p *Presenter) show(b bubble, now time.Time) {
 	if b.kind == kindReply {
 		p.State = Reply
 	}
+	p.typed, p.revealAll, p.shownAt = false, true, now // only chat answers are typed out
 	p.cur, p.hideAt = b, now.Add(b.d)
 }
 
 // next shows the oldest queued bubble, or goes idle.
 func (p *Presenter) next(now time.Time) {
+	p.sent = ""
 	if len(p.queue) > 0 {
 		b := p.queue[0]
 		p.queue = p.queue[1:]

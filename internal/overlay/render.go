@@ -19,10 +19,11 @@ type Renderer interface {
 
 // Anim carries the animation clocks for one frame.
 type Anim struct {
-	T        float64 // seconds since the form started
-	Motion   float64 // short random idle animation in [0,1] (0 = none)
-	Thinking bool    // waiting for a chat reply: the leaf sways slowly
-	Think    float64 // seconds since the chat was sent
+	T      float64 // seconds since the form (or display form) started
+	Motion float64 // short random idle animation in [0,1] (0 = none)
+	Phase  int     // forms.Mikir: 0 mikir, 1 mikir lama, 2 sangat lama
+	Hop    float64 // success hop progress in (0,1), 0 = none
+	Still  bool    // animations off: static poses
 }
 
 // Palette from PRD 11.1 (premultiplied RGBA).
@@ -48,6 +49,9 @@ type Procedural struct{}
 // DrawCharacter implements Renderer.
 func (Procedural) DrawCharacter(c *Canvas, f forms.Form, r Rect, a Anim, s float64) {
 	t, motion := a.T, a.Motion
+	if a.Still {
+		t, motion = 10, 0 // past every one-off animation, no idle wiggle
+	}
 	size := 1.0
 	if f == forms.Fokus {
 		size = 0.92
@@ -63,13 +67,21 @@ func (Procedural) DrawCharacter(c *Canvas, f forms.Form, r Rect, a Anim, s float
 	if f == forms.Tidur { // slow breathing
 		cy += float32(math.Sin(t*1.5) * 1.2 * s)
 	}
+	if a.Hop > 0 && !a.Still { // one small hop on success
+		cy -= float32(math.Sin(a.Hop*math.Pi) * 9 * s)
+	}
+	if f == forms.Mikir && a.Phase >= 1 && !a.Still { // slow side-to-side sway
+		cx += float32(math.Sin(t*2.4) * 3 * s)
+	}
 	rx, ry := 44*sc, 38*sc
 
-	angle := leafAngle(f, t, motion)
-	if a.Thinking {
-		angle += thinkSway(a.Think)
+	spin := float32(1)
+	if f == forms.Mikir && a.Phase < 2 && !a.Still {
+		// propeller: the leaf turns around its stem, so seen from the front
+		// its width shrinks, flips and grows again (it never hides behind the body)
+		spin = float32(math.Cos(t * math.Pi * 1.2))
 	}
-	drawLeaf(c, cx, cy-ry+2*sc, angle, sc, lw)
+	drawLeaf(c, cx, cy-ry+2*sc, leafAngle(f, a.Phase, t, motion, a.Still), spin, sc, lw)
 
 	var body Path
 	body.Ellipse(cx, cy, rx, ry)
@@ -81,15 +93,35 @@ func (Procedural) DrawCharacter(c *Canvas, f forms.Form, r Rect, a Anim, s float
 	ch.Ellipse(cx+24*sc, cy+8*sc, 7*sc, 4.5*sc)
 	c.Fill(&ch, ColCheek)
 
-	drawFace(c, f, cx, cy, sc, lw, t, motion)
+	if f == forms.Mikir && a.Phase >= 1 {
+		drawSweat(c, cx+rx*0.8, cy-ry*0.45, sc, lw)
+	}
+	drawFace(c, f, a.Phase, cx, cy, sc, lw, t, motion, a.Still)
 }
 
-// thinkSway is the slow pendulum of the leaf while Tunas is thinking
-// (about one swing every 2.4 s, ±0.25 rad).
-func thinkSway(t float64) float64 { return math.Sin(t*2.6) * 0.25 }
+// drawSweat draws a small drop on the side of the body.
+func drawSweat(c *Canvas, x, y, sc, lw float32) {
+	var d Path
+	d.MoveTo(x, y-6*sc)
+	d.QuadTo(x+4.5*sc, y+1*sc, x, y+3.5*sc)
+	d.QuadTo(x-4.5*sc, y+1*sc, x, y-6*sc)
+	d.Close()
+	c.Fill(&d, ColBubble)
+	c.Stroke(&d, lw*0.8, ColLine)
+}
 
-func leafAngle(f forms.Form, t, motion float64) float64 {
+func leafAngle(f forms.Form, phase int, t, motion float64, still bool) float64 {
 	switch f {
+	case forms.Mikir:
+		if phase >= 2 {
+			return 0.9 + math.Sin(t*1.5)*0.05 // drooping halfway
+		}
+		if still {
+			return 0.5
+		}
+		return 0.15 // upright; the propeller spin is the leaf's width (see spin)
+	case forms.Sedih:
+		return 0.5 + 1.0*math.Min(t/0.4, 1) // wilts over 0.4 s
 	case forms.Fokus, forms.Ingat, forms.Tegur:
 		return 0
 	case forms.Tidur:
@@ -104,7 +136,9 @@ func leafAngle(f forms.Form, t, motion float64) float64 {
 	return 0.5 + math.Sin(t*1.3)*0.08 + math.Sin(motion*math.Pi*6)*0.35*motion
 }
 
-func drawLeaf(c *Canvas, x, y float32, angle float64, sc, lw float32) {
+// drawLeaf draws the leaf at angle; spin in [-1,1] scales its width (1 = flat
+// facing the viewer, 0 = edge-on, negative = flipped).
+func drawLeaf(c *Canvas, x, y float32, angle float64, spin, sc, lw float32) {
 	sin, cos := float32(math.Sin(angle)), float32(math.Cos(angle))
 	rot := func(px, py float32) (float32, float32) { return x + px*cos - py*sin, y + px*sin + py*cos }
 
@@ -116,8 +150,12 @@ func drawLeaf(c *Canvas, x, y float32, angle float64, sc, lw float32) {
 
 	var leaf Path
 	tx, ty := rot(0, -34*sc)
-	l1x, l1y := rot(-13*sc, -22*sc)
-	r1x, r1y := rot(13*sc, -22*sc)
+	hw := 13 * sc * spin
+	if hw > -1.5*sc && hw < 1.5*sc { // keep a sliver when edge-on
+		hw = 1.5 * sc
+	}
+	l1x, l1y := rot(-hw, -22*sc)
+	r1x, r1y := rot(hw, -22*sc)
 	leaf.MoveTo(sx, sy)
 	leaf.QuadTo(l1x, l1y, tx, ty)
 	leaf.QuadTo(r1x, r1y, sx, sy)
@@ -132,11 +170,37 @@ func drawLeaf(c *Canvas, x, y float32, angle float64, sc, lw float32) {
 	c.Stroke(&vein, lw*0.6, ColLine)
 }
 
-func drawFace(c *Canvas, f forms.Form, cx, cy, sc, lw float32, t, motion float64) {
+func drawFace(c *Canvas, f forms.Form, phase int, cx, cy, sc, lw float32, t, motion float64, still bool) {
 	ex, ey := 15*sc, -4*sc
 	blink := f == forms.Biasa && (math.Mod(t, 4.2) < 0.14 || (motion > 0.85))
+	crossed := f == forms.Mikir && phase >= 2 && !still && math.Mod(t, 1.2) < 0.6
 	var p Path
 	switch {
+	case crossed: // small "x" eyes, alternating with normal ones
+		for _, sx := range []float32{-1, 1} {
+			x0, y0, k := cx+sx*ex, cy+ey, 3.5*sc
+			p.MoveTo(x0-k, y0-k)
+			p.LineTo(x0+k, y0+k)
+			p.MoveTo(x0+k, y0-k)
+			p.LineTo(x0-k, y0+k)
+		}
+		c.Stroke(&p, lw*1.3, ColFace)
+	case f == forms.Mikir: // glancing up and to the right
+		r := 4 * sc
+		p.Ellipse(cx-ex+2.5*sc, cy+ey-3*sc, r, r)
+		p.Ellipse(cx+ex+2.5*sc, cy+ey-3*sc, r, r)
+		c.Fill(&p, ColFace)
+	case f == forms.Sedih: // looking down, sad brows (inner ends raised)
+		r := 3.5 * sc
+		p.Ellipse(cx-ex, cy+ey+3*sc, r, r)
+		p.Ellipse(cx+ex, cy+ey+3*sc, r, r)
+		c.Fill(&p, ColFace)
+		var b Path
+		b.MoveTo(cx-ex-6*sc, cy+ey-6*sc)
+		b.LineTo(cx-ex+5*sc, cy+ey-10*sc)
+		b.MoveTo(cx+ex+6*sc, cy+ey-6*sc)
+		b.LineTo(cx+ex-5*sc, cy+ey-10*sc)
+		c.Stroke(&b, lw*1.2, ColFace)
 	case blink, f == forms.Fokus:
 		for _, sx := range []float32{-1, 1} {
 			p.MoveTo(cx+sx*ex-5*sc, cy+ey)
@@ -195,6 +259,13 @@ func drawFace(c *Canvas, f forms.Form, cx, cy, sc, lw float32, t, motion float64
 	case forms.Tegur:
 		m.MoveTo(cx-6*sc, my+2*sc)
 		m.LineTo(cx+6*sc, my-1*sc)
+		c.Stroke(&m, lw*1.3, ColFace)
+	case forms.Mikir: // small "o"
+		m.Ellipse(cx+1*sc, my+1*sc, 2.6*sc, 2.6*sc)
+		c.Stroke(&m, lw*1.1, ColFace)
+	case forms.Sedih: // crooked, turned down
+		m.MoveTo(cx-7*sc, my+3*sc)
+		m.QuadTo(cx-1*sc, my-2*sc, cx+6*sc, my+1*sc)
 		c.Stroke(&m, lw*1.3, ColFace)
 	default:
 		m.MoveTo(cx-6*sc, my-1*sc)

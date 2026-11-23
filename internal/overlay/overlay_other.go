@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/ardwiinoo/tunas/internal/agent"
 	"github.com/ardwiinoo/tunas/internal/config"
@@ -25,6 +26,9 @@ type Overlay struct {
 	OnQuit       func()
 	LogPath      string
 }
+
+// Configure does nothing.
+func (*Overlay) Configure(time.Duration, time.Duration, bool, LoadingLines) {}
 
 // SetConn does nothing.
 func (*Overlay) SetConn(agent.ConnState) {}

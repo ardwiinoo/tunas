@@ -23,6 +23,14 @@ const (
 // All lists every form.
 var All = []Form{Biasa, Fokus, Tidur, Senang, Ingat, Tegur}
 
+// Display-only forms: the overlay shows them around a chat (waiting for an
+// answer, a failed request). The state machine never outputs them and they
+// cannot be set with /form, so they are not in All and not Valid.
+const (
+	Mikir Form = "mikir"
+	Sedih Form = "sedih"
+)
+
 // Valid reports whether f is a known form.
 func Valid(f Form) bool {
 	for _, x := range All {

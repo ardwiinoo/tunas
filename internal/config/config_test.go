@@ -85,6 +85,13 @@ forms:
 	if c.CategoryOf("code.EXE") != "work" || c.CategoryOf("chrome.exe") != "other" {
 		t.Fatal("user categories should replace defaults")
 	}
+	if c.Loading.SlowAfterSeconds != 3 || c.Loading.VerySlowAfterSeconds != 8 || !c.Animations {
+		t.Fatalf("loading/animations defaults: %+v %v", c.Loading, c.Animations)
+	}
+	c, err = ParseAgent([]byte("loading: {slow_after_seconds: 2, very_slow_after_seconds: 6}\nanimations: false\n"))
+	if err != nil || c.Loading.SlowAfterSeconds != 2 || c.Loading.VerySlowAfterSeconds != 6 || c.Animations {
+		t.Fatalf("loading/animations from yaml: %+v %v %v", c.Loading, c.Animations, err)
+	}
 }
 
 func TestParseAgentRejects(t *testing.T) {
@@ -93,6 +100,8 @@ func TestParseAgentRejects(t *testing.T) {
 		"badcat":   "app_categories: {games: [x.exe]}",
 		"badurl":   "server_url: ftp://x",
 		"interval": "sample_interval_seconds: 0",
+		"loading":  "loading: {slow_after_seconds: 8, very_slow_after_seconds: 3}",
+		"loading0": "loading: {slow_after_seconds: 0}",
 	}
 	for name, y := range cases {
 		if _, err := ParseAgent([]byte(y)); err == nil {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/ardwiinoo/tunas/internal/agent"
 	"github.com/ardwiinoo/tunas/internal/forms"
+	"github.com/ardwiinoo/tunas/modes"
 )
 
 func TestRenderAllForms(t *testing.T) {
@@ -18,11 +19,30 @@ func TestRenderAllForms(t *testing.T) {
 	measureFace, _ := NewFace(14)
 	measure := Measurer(measureFace)
 	outDir := os.Getenv("TUNAS_RENDER_DIR") // set to write PNGs for visual review
+	type look struct {
+		name string
+		f    forms.Form
+		a    Anim
+	}
+	var looks []look
 	for _, f := range forms.All {
+		looks = append(looks, look{string(f), f, Anim{T: 0.5}})
+	}
+	looks = append(looks,
+		look{"mikir", forms.Mikir, Anim{T: 0.5}},
+		look{"mikir_lama", forms.Mikir, Anim{T: 4, Phase: 1}},
+		look{"sangat_lama_x", forms.Mikir, Anim{T: 9.8, Phase: 2}}, // "x" eyes half of the time
+		look{"sangat_lama", forms.Mikir, Anim{T: 9.1, Phase: 2}},
+		look{"sedih", forms.Sedih, Anim{T: 1}},
+		look{"berhasil_hop", forms.Senang, Anim{T: 10, Hop: 0.5}},
+		look{"mikir_still", forms.Mikir, Anim{T: 0.5, Still: true}},
+	)
+	for _, lk := range looks {
+		f := lk.name
 		s := 1.5
 		c := NewCanvas(int(WindowW*s), int(WindowH*s))
 		sc := ComputeScene("bottom-right", "Halo, aku Tunas! Jangan lupa minum air putih ya.", measure)
-		Frame(c, Procedural{}, sc, f, face, Anim{T: 0.5, Thinking: f == forms.Biasa, Think: 0.6}, s)
+		Frame(c, Procedural{}, sc, lk.f, face, lk.a, s)
 
 		at := func(x, y float64) [4]uint8 {
 			o := c.Img.PixOffset(int(x*s), int(y*s))
@@ -68,7 +88,17 @@ func TestFixedTextsHaveGlyphs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	texts := []string{Cursor, "› ", "…", TextThinking, TextSlow, ConfirmHint, TextCancelled}
+	texts := []string{Cursor, "› ", "…", ConfirmHint, CancelHint, TextCancelled}
+	ms, err := modes.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ls := range ms["mikir"].Lines {
+		texts = append(texts, ls...)
+	}
+	for _, ls := range [][]string{DefaultLoadingLines.Mikir, DefaultLoadingLines.MikirLama, DefaultLoadingLines.SangatLama} {
+		texts = append(texts, ls...)
+	}
 	for _, f := range []agent.ChatFail{agent.FailTimeout, agent.FailOffline, agent.FailCap, agent.FailLLM,
 		agent.FailDisabled, agent.FailAuth, agent.FailBusy, agent.FailServer,
 		agent.FailBlocked, agent.FailQuota, agent.FailDown} {
