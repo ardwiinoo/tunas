@@ -15,7 +15,7 @@ import (
 
 // ChatAPI is the server side of the bubble (agent.Client implements it).
 type ChatAPI interface {
-	Chat(ctx context.Context, text, form string) (agent.ChatReply, error)
+	Chat(ctx context.Context, text, form string, history []agent.ChatTurn) (agent.ChatReply, error)
 	Confirm(ctx context.Context, id string, yes bool) (string, error)
 }
 
@@ -29,6 +29,9 @@ type Overlay struct {
 
 // Configure does nothing.
 func (*Overlay) Configure(time.Duration, time.Duration, bool, LoadingLines) {}
+
+// SetIdleClose does nothing.
+func (*Overlay) SetIdleClose(time.Duration) {}
 
 // SetConn does nothing.
 func (*Overlay) SetConn(agent.ConnState) {}

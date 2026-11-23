@@ -173,7 +173,7 @@ func ParseIntent(raw string) (Intent, error) {
 
 // HandleText handles a free-text message from the owner on Telegram.
 func (a *Assistant) HandleText(ctx context.Context, text string) bot.Reply {
-	r, err := a.Handle(ctx, a.ActiveForm(ctx), text)
+	r, err := a.Handle(ctx, a.ActiveForm(ctx), text, nil)
 	if err != nil {
 		return bot.Reply{Text: LLMFailText(err)}
 	}
@@ -184,10 +184,11 @@ func (a *Assistant) HandleText(ctx context.Context, text string) bot.Reply {
 // overlay bubble: classify the intent, then
 //   - reminder/task: propose with a confirmation (nothing is saved yet),
 //   - question about activity: fixed query template, model only phrases,
-//   - anything else: persona chat with guardrails.
+//   - anything else: persona chat with guardrails, with the recent
+//     conversation (history, oldest first; the bubble sends up to 6 turns).
 //
 // The error is an LLM failure (see llm.Kind); the caller words it.
-func (a *Assistant) Handle(ctx context.Context, f forms.Form, text string) (bot.Reply, error) {
+func (a *Assistant) Handle(ctx context.Context, f forms.Form, text string, history []llm.Message) (bot.Reply, error) {
 	text = strings.TrimSpace(text)
 	if utf8.RuneCountInString(text) > MaxInputLen {
 		return bot.Reply{Text: fmt.Sprintf("Pesannya terlalu panjang (maks %d karakter).", MaxInputLen)}, nil
@@ -214,7 +215,7 @@ func (a *Assistant) Handle(ctx context.Context, f forms.Form, text string) (bot.
 	case "question":
 		return bot.Reply{Text: a.answerAs(ctx, f, text, in.Template, in.Range)}, nil
 	}
-	out, err := a.ChatAs(ctx, f, text)
+	out, err := a.chatWith(ctx, f, text, history)
 	return bot.Reply{Text: out}, err
 }
 
@@ -349,10 +350,16 @@ func (a *Assistant) Chat(ctx context.Context, text string) string {
 // ChatAs replies in the given form's persona. The error (see llm.Kind) lets
 // callers tell the user why there is no answer.
 func (a *Assistant) ChatAs(ctx context.Context, f forms.Form, text string) (string, error) {
-	out, err := a.LLM.Complete(ctx, []llm.Message{
-		{Role: "system", Content: a.voice(f) + chatRule},
-		{Role: "user", Content: text},
-	})
+	return a.chatWith(ctx, f, text, nil)
+}
+
+// chatWith is persona chat with earlier turns of the conversation.
+func (a *Assistant) chatWith(ctx context.Context, f forms.Form, text string, history []llm.Message) (string, error) {
+	msgs := make([]llm.Message, 0, len(history)+2)
+	msgs = append(msgs, llm.Message{Role: "system", Content: a.voice(f) + chatRule})
+	msgs = append(msgs, history...)
+	msgs = append(msgs, llm.Message{Role: "user", Content: text})
+	out, err := a.LLM.Complete(ctx, msgs)
 	if err != nil {
 		a.logLLMErr("chat", err)
 		return "", err
@@ -439,6 +446,10 @@ func joinForms() string {
 }
 
 func (a *Assistant) logLLMErr(op string, err error) {
+	if errors.Is(err, context.Canceled) {
+		a.Log.Info("llm request cancelled by the caller", "op", op)
+		return
+	}
 	if errors.Is(err, llm.ErrDisabled) || errors.Is(err, llm.ErrCap) {
 		a.Log.Info("llm unavailable", "op", op, "reason", err.Error())
 		return

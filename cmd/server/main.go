@@ -140,7 +140,7 @@ func serve() error {
 		Handler: api.New(log, api.Options{DB: db,
 			// the bubble uses the same pipeline as Telegram (intent, fixed
 			// queries, confirmation), plus "cari ..." for web search
-			Chat: func(ctx context.Context, form, text string) (api.ChatResult, error) {
+			Chat: func(ctx context.Context, form, text string, history []api.ChatTurn) (api.ChatResult, error) {
 				if q, ok := cutPrefixFold(text, "cari "); ok {
 					return api.ChatResult{Reply: asst.Search(ctx, searcher, q)}, nil
 				}
@@ -148,7 +148,11 @@ func serve() error {
 				if !forms.Valid(f) {
 					f = asst.ActiveForm(ctx)
 				}
-				r, err := asst.Handle(ctx, f, text)
+				hist := make([]llm.Message, len(history))
+				for i, t := range history {
+					hist[i] = llm.Message{Role: t.Role, Content: t.Text}
+				}
+				r, err := asst.Handle(ctx, f, text, hist)
 				return api.ChatResult{Reply: r.Text, ConfirmID: assist.ConfirmID(r)}, err
 			},
 			Confirm: asst.Confirm,

@@ -74,6 +74,12 @@ const (
 	wmClose         = 0x0010
 	wmMouseActivate = 0x0021
 	wmChar          = 0x0102
+	wmKeyDown       = 0x0100
+	wmMouseWheel    = 0x020A
+	vkPrior         = 0x21
+	vkNext          = 0x22
+	vkUp            = 0x26
+	vkDown          = 0x28
 	wmTimer         = 0x0113
 	wmHotkey        = 0x0312
 	wmLButtonDown   = 0x0201
@@ -145,7 +151,7 @@ type winMsg struct {
 
 // ChatAPI is the server side of the bubble (agent.Client implements it).
 type ChatAPI interface {
-	Chat(ctx context.Context, text, form string) (agent.ChatReply, error)
+	Chat(ctx context.Context, text, form string, history []agent.ChatTurn) (agent.ChatReply, error)
 	Confirm(ctx context.Context, id string, yes bool) (string, error)
 }
 
@@ -221,6 +227,9 @@ func (o *Overlay) Configure(slowAfter, verySlowAfter time.Duration, animations b
 		o.visibleMs = hiddenTick
 	}
 }
+
+// SetIdleClose sets how long an open bubble waits for activity (call before Run).
+func (o *Overlay) SetIdleClose(d time.Duration) { o.p.IdleClose = d }
 
 // startCall makes the context for a chat/confirm request; Esc cancels it.
 func (o *Overlay) startCall() (context.Context, context.CancelFunc) {
@@ -337,6 +346,26 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 	case wmChar:
 		o.onChar(uint16(wp), now)
 		return 0
+	case wmKeyDown:
+		if o.p.KeysWanted() {
+			switch wp {
+			case vkUp:
+				o.p.ScrollBy(1)
+			case vkDown:
+				o.p.ScrollBy(-1)
+			case vkPrior:
+				o.p.ScrollBy(MaxLines - 1)
+			case vkNext:
+				o.p.ScrollBy(-(MaxLines - 1))
+			}
+			o.sync(now)
+		}
+	case wmMouseWheel:
+		if o.p.Visible() {
+			o.p.ScrollBy(int(int16(wp>>16)) / 120 * 3)
+			o.sync(now)
+			return 0
+		}
 	case wmLButtonDown:
 		o.p.Dismiss(now)
 		o.sync(now)
@@ -376,12 +405,12 @@ func (o *Overlay) onChar(u uint16, now time.Time) {
 		}
 		o.sync(now)
 		return
-	case o.p.State == Reply:
-		if u == 0x0D { // Enter: show the whole answer now
+	case o.p.State == Reply && !o.p.Conversing():
+		if u == 0x0D { // Enter while the answer is typed out: show it all
 			o.p.SkipReveal(now)
+			o.sync(now)
+			return
 		}
-		o.sync(now)
-		return
 	}
 	if o.p.State == Confirm {
 		switch u {
@@ -405,7 +434,7 @@ func (o *Overlay) onChar(u uint16, now time.Time) {
 	case u == 0x0D:
 		if text := o.p.Submit(now); text != "" {
 			ctx, cancel := o.startCall()
-			go o.ask(ctx, cancel, o.p.Req(), text, o.p.Form)
+			go o.ask(ctx, cancel, o.p.Req(), text, o.p.Form, o.p.Context())
 		}
 	case u == 0x1B:
 		o.p.CancelInput(now)
@@ -423,10 +452,10 @@ func (o *Overlay) onChar(u uint16, now time.Time) {
 
 // ask runs one chat call off the UI thread. The presenter locks input while
 // waiting, so at most one call is in flight.
-func (o *Overlay) ask(ctx context.Context, cancel context.CancelFunc, req int, text string, f forms.Form) {
+func (o *Overlay) ask(ctx context.Context, cancel context.CancelFunc, req int, text string, f forms.Form, history []agent.ChatTurn) {
 	defer cancel()
 	start := time.Now()
-	reply, err := o.chat.Chat(ctx, text, string(f))
+	reply, err := o.chat.Chat(ctx, text, string(f), history)
 	res := chatResult{req: req, reply: reply.Reply, confirmID: reply.ConfirmID}
 	if errors.Is(err, context.Canceled) && o.ctx.Err() == nil {
 		return // Esc: already handled on the UI thread
@@ -607,12 +636,12 @@ func (o *Overlay) render(now time.Time) {
 	if d := now.Sub(o.motionAt).Seconds(); d < 1 {
 		motion = 1 - d
 	}
-	sc := o.scene
-	sc.Lines = WithDots(sc.Lines, o.p.Dots(now))
-	if n := o.p.Revealed(now); n == 0 {
+	lines := WithDots(o.scene.All, o.p.Dots(now))
+	n := o.p.Revealed(now)
+	lines = RevealLines(lines, n)
+	sc := o.scene.View(lines, o.p.ScrollUp(len(lines)-MaxLines))
+	if n == 0 {
 		sc.Bubble.W = 0 // hop first, then the answer is typed out
-	} else {
-		sc.Lines = RevealLines(sc.Lines, n)
 	}
 	look := o.p.Look(now)
 	a := Anim{T: look.T, Motion: motion, Phase: look.Phase, Hop: look.Hop, Still: o.p.NoAnimations}

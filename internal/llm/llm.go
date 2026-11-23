@@ -223,6 +223,12 @@ func (c *Client) Complete(ctx context.Context, msgs []Message) (string, error) {
 		}
 		t0 := time.Now()
 		content, err := c.tryModel(ctx, model, msgs, min(c.PerModel, left))
+		if err != nil && ctx.Err() != nil && !errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
+			// the caller gave up (owner pressed Esc, shutdown): not an LLM failure
+			c.Log.Info("llm request cancelled by the caller", "model", model, "attempt", i+1,
+				"ms", time.Since(t0).Milliseconds())
+			return "", ctx.Err()
+		}
 		if err == nil {
 			c.Log.Info("llm attempt", "model", model, "attempt", i+1, "status", "ok",
 				"ms", time.Since(t0).Milliseconds(), "total_ms", time.Since(start).Milliseconds())
@@ -235,9 +241,6 @@ func (c *Client) Complete(ctx context.Context, msgs []Message) (string, error) {
 		var se *StatusError
 		if kind == KindBlocked && errors.As(err, &se) && c.OnBlocked != nil {
 			c.OnBlocked(model, se.Code)
-		}
-		if ctx.Err() != nil && !errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
-			return "", ctx.Err() // the caller gave up (shutdown); not an LLM failure
 		}
 	}
 	c.Log.Warn("llm all models failed", "kind", fe.Kind(), "attempts", len(fe.Attempts),

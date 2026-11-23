@@ -176,6 +176,15 @@ func TestCallerCancelStops(t *testing.T) {
 	if _, err := c.Complete(ctx, nil); !errors.Is(err, context.Canceled) || len(g.requests) != 1 {
 		t.Fatalf("err %v after %d requests (shutdown must not walk the fallbacks)", err, len(g.requests))
 	}
+	var logBuf bytes.Buffer
+	c.Log = slog.New(slog.NewTextHandler(&logBuf, nil))
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	g.respond = func(int, chatRequest) (int, string) { cancel2(); return 500, `{}` }
+	_, _ = c.Complete(ctx2, nil)
+	if !strings.Contains(logBuf.String(), "level=INFO msg=\"llm request cancelled by the caller\"") ||
+		strings.Contains(logBuf.String(), "level=WARN") {
+		t.Fatalf("a cancel by the owner is INFO, not WARN:\n%s", logBuf.String())
+	}
 }
 
 func TestKind(t *testing.T) {

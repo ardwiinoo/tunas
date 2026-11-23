@@ -102,6 +102,7 @@ func TestParseAgentRejects(t *testing.T) {
 		"interval": "sample_interval_seconds: 0",
 		"loading":  "loading: {slow_after_seconds: 8, very_slow_after_seconds: 3}",
 		"loading0": "loading: {slow_after_seconds: 0}",
+		"bubble":   "bubble: {idle_close_seconds: 5}",
 	}
 	for name, y := range cases {
 		if _, err := ParseAgent([]byte(y)); err == nil {

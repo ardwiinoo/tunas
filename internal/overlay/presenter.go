@@ -87,6 +87,7 @@ type Presenter struct {
 	NoAnimations  bool          // static poses, no typing effect
 	Lines         LoadingLines  // default DefaultLoadingLines
 	Pick          func(n int) int
+	IdleClose     time.Duration // close the open bubble after this long without activity (default 60 s)
 
 	cur       bubble // Showing, Reply
 	failMsg   string // Failed
@@ -101,6 +102,11 @@ type Presenter struct {
 	revealAll bool      // Reply: typing effect skipped or off
 	failedAt  time.Time // Failed: when it failed (sad pose)
 	queue     []bubble
+	scrollUp  int // lines scrolled up from the bottom of a long bubble
+
+	history  []Turn    // the conversation so far (last MaxContext turns)
+	asked    []Turn    // history sent with the pending request
+	closedAt time.Time // when the bubble last closed (context resets after ContextReset)
 
 	confirmID string // Confirm
 	confirmQ  string // Confirm: the interpretation shown to the owner
@@ -120,8 +126,13 @@ const (
 	dotStep              = 400 * time.Millisecond
 	MaxDraftLen          = 300
 	MaxQueue             = 4
-	InputTimeout         = 60 * time.Second // the text box closes after this long without typing
+	InputTimeout         = 60 * time.Second // default IdleClose
+	MaxContext           = 6                // turns of conversation sent with a message
+	ContextReset         = 5 * time.Minute  // a bubble closed this long starts a new conversation
 )
+
+// Turn is one message of the bubble conversation.
+type Turn = agent.ChatTurn
 
 // Fixed bubble texts. Every character must exist in the embedded font (see
 // TestFixedTextsHaveGlyphs); U+258F, for example, does not.
@@ -162,8 +173,41 @@ func FailText(f agent.ChatFail) string {
 // Visible reports whether the window should be on screen.
 func (p *Presenter) Visible() bool { return p.State != Idle }
 
-// Typing reports whether keystrokes go to the text box.
-func (p *Presenter) Typing() bool { return p.State == Input || p.State == Failed }
+// Typing reports whether keystrokes go to the text box: the input, the
+// retry box after a failure, and the reply (the conversation continues).
+func (p *Presenter) Typing() bool {
+	return p.State == Input || p.State == Failed || (p.State == Reply && p.typed)
+}
+
+// Conversing reports whether a chat answer is up with the text box under it.
+func (p *Presenter) Conversing() bool { return p.State == Reply && p.typed && p.revealAll }
+
+func (p *Presenter) idleClose() time.Duration {
+	if p.IdleClose > 0 {
+		return p.IdleClose
+	}
+	return InputTimeout
+}
+
+// Context is the conversation history to send with the pending request.
+func (p *Presenter) Context() []Turn { return append([]Turn(nil), p.asked...) }
+
+func (p *Presenter) remember(t Turn) {
+	p.history = append(p.history, t)
+	if len(p.history) > MaxContext {
+		p.history = p.history[len(p.history)-MaxContext:]
+	}
+}
+
+// ScrollBy scrolls a long bubble: positive = up (towards the start).
+func (p *Presenter) ScrollBy(lines int) { p.scrollUp = max(0, p.scrollUp+lines) }
+
+// ScrollUp is how many lines the bubble is scrolled up from the bottom,
+// clamped to maxUp (the renderer knows the line count).
+func (p *Presenter) ScrollUp(maxUp int) int {
+	p.scrollUp = min(p.scrollUp, max(0, maxUp))
+	return p.scrollUp
+}
 
 // Waiting reports whether a chat result is pending (input locked).
 func (p *Presenter) Waiting() bool {
@@ -174,7 +218,7 @@ func (p *Presenter) Waiting() bool {
 // a proposal (Enter/Esc), a pending request (Esc cancels) or an answer
 // still being typed out (Enter skips).
 func (p *Presenter) KeysWanted() bool {
-	return p.Typing() || p.State == Confirm || p.Waiting() || (p.State == Reply && p.typed && !p.revealAll)
+	return p.Typing() || p.State == Confirm || p.Waiting()
 }
 
 // Req is the id of the newest request; results for other ids are stale.
@@ -292,7 +336,12 @@ func replyFor(text string) time.Duration {
 
 func (p *Presenter) showReply(b bubble, now time.Time) {
 	p.State, p.cur, p.shownAt, p.typed, p.revealAll = Reply, b, now, true, p.NoAnimations
-	p.hideAt = now.Add(p.revealDur(b.text) + b.d)
+	p.Draft, p.scrollUp = "", 0
+	// the text box opens under the answer; idle time counts from when the
+	// answer has been typed out
+	p.typedAt = now.Add(p.revealDur(b.text))
+	p.hideAt = time.Time{}
+	p.remember(Turn{Role: "assistant", Text: b.text})
 }
 
 // revealDur is how long the hop and the typing effect take.
@@ -326,7 +375,11 @@ func (p *Presenter) SkipReveal(now time.Time) {
 		return
 	}
 	p.revealAll = true
-	p.hideAt = now.Add(p.cur.d)
+	if p.typed {
+		p.typedAt = now
+	} else {
+		p.hideAt = now.Add(p.cur.d)
+	}
 }
 
 // OnProposal shows the server's interpretation of a reminder/task request
@@ -421,16 +474,20 @@ func (p *Presenter) enqueue(b bubble) {
 	p.queue = append(p.queue, b)
 }
 
-// OnHotkey opens the text box, or closes it when already open. Ignored
-// while a request is pending (Esc cancels it instead).
+// OnHotkey opens the text box. When the bubble already has one (input,
+// retry, conversation) it only brings it back to focus; Esc closes it.
+// Ignored while a request is pending (Esc cancels it instead).
 func (p *Presenter) OnHotkey(now time.Time) {
-	switch p.State {
-	case Input, Failed:
-		p.CancelInput(now)
+	switch {
+	case p.Typing():
+		if p.State == Reply {
+			p.revealAll = true // the reply is being typed out: show it, then type
+		}
+		p.typedAt = now
 		return
-	case Thinking, Slow, VerySlow, Confirm:
+	case p.Waiting(), p.State == Confirm:
 		return
-	case Showing, Reply:
+	case p.State == Showing, p.State == Reply:
 		if p.cur.kind == kindReminder || p.cur.kind == kindReply {
 			// not seen in full yet: show it again after the chat
 			b := p.cur
@@ -441,7 +498,7 @@ func (p *Presenter) OnHotkey(now time.Time) {
 			}
 		}
 	}
-	p.State, p.Draft, p.cur, p.hideAt, p.sent = Input, "", bubble{}, time.Time{}, ""
+	p.State, p.Draft, p.cur, p.hideAt, p.sent, p.scrollUp = Input, "", bubble{}, time.Time{}, "", 0
 	p.typedAt = now
 }
 
@@ -450,7 +507,8 @@ func (p *Presenter) Type(rs []rune, now time.Time) {
 	if !p.Typing() {
 		return
 	}
-	p.typedAt = now
+	p.revealAll = true // typing under a reply shows the whole reply
+	p.typedAt, p.scrollUp = now, 0
 	for _, r := range rs {
 		if r < 0x20 || r == 0x7f {
 			continue
@@ -467,7 +525,8 @@ func (p *Presenter) Backspace(now time.Time) {
 	if !p.Typing() {
 		return
 	}
-	p.typedAt = now
+	p.revealAll = true
+	p.typedAt, p.scrollUp = now, 0
 	if p.Draft != "" {
 		rs := []rune(p.Draft)
 		p.Draft = string(rs[:len(rs)-1])
@@ -483,9 +542,19 @@ func (p *Presenter) Submit(now time.Time) string {
 	text := strings.TrimSpace(p.Draft)
 	p.Draft = ""
 	if text == "" {
+		if p.State == Reply {
+			p.revealAll, p.typedAt = true, now // Enter on an empty line: show it all, stay
+			return ""
+		}
 		p.next(now)
 		return ""
 	}
+	if !p.closedAt.IsZero() && now.Sub(p.closedAt) > ContextReset {
+		p.history = nil // a new conversation
+	}
+	p.closedAt = time.Time{}
+	p.asked = append([]Turn(nil), p.history...)
+	p.remember(Turn{Role: "user", Text: text})
 	p.sent = text
 	p.startRequest(now)
 	return text
@@ -511,7 +580,7 @@ func (p *Presenter) Dismiss(now time.Time) {
 func (p *Presenter) Tick(now time.Time) {
 	switch p.State {
 	case Input, Failed:
-		if now.Sub(p.typedAt) >= InputTimeout {
+		if now.Sub(p.typedAt) >= p.idleClose() {
 			p.CancelInput(now)
 		}
 	case Thinking, Slow, VerySlow:
@@ -524,12 +593,21 @@ func (p *Presenter) Tick(now time.Time) {
 		case w >= p.slowAfter() && w < p.verySlowAfter() && p.State == Thinking:
 			p.enterWait(Slow)
 		}
-	case Showing, Reply:
+	case Reply:
+		switch {
+		case p.typed && !p.revealAll && p.Revealed(now) == -1:
+			p.revealAll = true // typed out: the text box appears
+		case p.typed && p.revealAll && now.Sub(p.typedAt) >= p.idleClose():
+			p.CancelInput(now)
+		case !p.typed && !now.Before(p.hideAt):
+			p.next(now)
+		}
+	case Showing:
 		if !now.Before(p.hideAt) {
 			p.next(now)
 		}
 	case Confirm:
-		if now.Sub(p.typedAt) >= InputTimeout {
+		if now.Sub(p.typedAt) >= p.idleClose() {
 			p.confirmID = ""
 			p.next(now) // unanswered: nothing saved
 		}
@@ -550,7 +628,12 @@ func (p *Presenter) BubbleText() string {
 		return p.phaseLine
 	case VerySlow:
 		return p.phaseLine + "\n" + CancelHint
-	case Showing, Reply:
+	case Reply:
+		if p.typed && p.revealAll {
+			return p.cur.text + "\n› " + p.Draft + Cursor
+		}
+		return p.cur.text
+	case Showing:
 		return p.cur.text
 	case Confirm:
 		return p.confirmQ + "\n" + ConfirmHint
@@ -629,7 +712,7 @@ func (p *Presenter) show(b bubble, now time.Time) {
 
 // next shows the oldest queued bubble, or goes idle.
 func (p *Presenter) next(now time.Time) {
-	p.sent = ""
+	p.sent, p.scrollUp, p.closedAt = "", 0, now
 	if len(p.queue) > 0 {
 		b := p.queue[0]
 		p.queue = p.queue[1:]
