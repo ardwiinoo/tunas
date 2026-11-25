@@ -33,10 +33,13 @@ import (
 	"github.com/ardwiinoo/tunas/internal/ghbackup"
 	"github.com/ardwiinoo/tunas/internal/holidays"
 	"github.com/ardwiinoo/tunas/internal/llm"
+	"github.com/ardwiinoo/tunas/internal/llmstats"
 	"github.com/ardwiinoo/tunas/internal/ops"
 	"github.com/ardwiinoo/tunas/internal/reminders"
 	"github.com/ardwiinoo/tunas/internal/search"
+	"github.com/ardwiinoo/tunas/internal/status"
 	"github.com/ardwiinoo/tunas/internal/store"
+	"github.com/ardwiinoo/tunas/internal/sysstats"
 	"github.com/ardwiinoo/tunas/internal/worklog"
 	"github.com/ardwiinoo/tunas/modes"
 )
@@ -65,6 +68,9 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+// version is set at build time via -ldflags "-X main.version=...".
+var version = "dev"
 
 func newLogger(level slog.Level) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
@@ -100,10 +106,12 @@ func serve() error {
 	monitor := ops.NewMonitor(db, notifierFunc(func(ctx context.Context, text string) error {
 		return tgBot.NotifyOwner(ctx, text)
 	}), time.Now, cfg.Location, log)
+	llmTrack := &llmstats.Tracker{Store: db, Now: time.Now, Loc: cfg.Location}
 	var completer llm.Completer = llm.Disabled{}
 	if cfg.LLMEnabled() {
 		llmClient := llm.New(cfg.BifrostBaseURL, cfg.BifrostAPIKey, cfg.LLMPrimaryModel, cfg.LLMFallbackModels, log)
 		llmClient.OnBlocked = monitor.ModelBlocked
+		llmClient.OnAttempt = llmTrack.Record
 		completer = &llm.Capped{
 			Inner: monitor.Watch(llmClient),
 			Usage: db, Cap: cfg.LLMDailyRequestCap, Now: time.Now, Loc: cfg.Location,
@@ -117,6 +125,20 @@ func serve() error {
 	} else {
 		log.Info("web search off (TAVILY_API_KEY empty); /cari says so")
 	}
+
+	statusSvc := &status.Service{
+		DB: db, Server: &sysstats.Collector{DB: db, Version: version, Start: time.Now(), Now: time.Now},
+		HostFile: cfg.HostStatsFile, LLM: llmTrack, LLMEnabled: cfg.LLMEnabled(), Primary: cfg.LLMPrimaryModel,
+		LLMCap: cfg.LLMDailyRequestCap, Version: version, Now: time.Now, Loc: cfg.Location,
+	}
+	if asst.Credits != nil {
+		statusSvc.Credits = func(ctx context.Context) string {
+			line, _ := asst.Credits.Line(ctx)
+			return line
+		}
+	}
+	monitor.Res = statusSvc
+	log.Info("status", "host_stats", cfg.HostStatsFile != "", "version", version)
 
 	cmds := &bot.Commands{DB: db, Loc: cfg.Location, Now: time.Now, Log: log}
 	if asst.Credits != nil {
@@ -179,7 +201,12 @@ func serve() error {
 		return bot.Reply{}, false
 	}
 	wl.ExtraCallback = rem.Callback
-	tgBot.OnCommand = wl.Command
+	tgBot.OnCommand = func(ctx context.Context, cmd, args string) (bot.Reply, bool) {
+		if cmd == "status" {
+			return statusReply(ctx, statusSvc, args, log), true
+		}
+		return wl.Command(ctx, cmd, args)
+	}
 	tgBot.OnText = func(ctx context.Context, text string) bot.Reply {
 		if r, ok := wl.PendingText(ctx, text); ok { // an answer to a worklog button
 			return r
@@ -187,6 +214,13 @@ func serve() error {
 		return asst.HandleText(ctx, text)
 	}
 	tgBot.OnCallback = func(ctx context.Context, data string) bot.Reply {
+		if c, ok, err := statusSvc.Callback(ctx, data); ok {
+			if err != nil {
+				log.Error("status callback failed", "err", err)
+				return bot.Reply{Toast: "Gagal mengambil status.", Keep: true}
+			}
+			return cardReply(c)
+		}
 		if r, ok := wl.Callback(ctx, data); ok {
 			return r
 		}
@@ -196,7 +230,7 @@ func serve() error {
 
 	httpSrv := &http.Server{
 		Addr: cfg.HTTPAddr,
-		Handler: api.New(log, api.Options{DB: db,
+		Handler: api.New(log, api.Options{DB: db, StatusSummary: statusSvc.Summary,
 			// the bubble uses the same pipeline as Telegram (intent, fixed
 			// queries, confirmation), plus "cari ..." for web search
 			Chat: func(ctx context.Context, form, text string, history []api.ChatTurn) (api.ChatResult, error) {
@@ -490,4 +524,34 @@ func (w worklogAPI) Answer(ctx context.Context, promptID int64, action string) e
 		return api.ErrPromptClosed
 	}
 	return err
+}
+
+// cardReply turns a status card into a Telegram reply.
+func cardReply(c status.Card) bot.Reply {
+	r := bot.Reply{Text: c.Text}
+	for _, row := range c.Rows {
+		var out []bot.Button
+		for _, b := range row {
+			out = append(out, bot.Button{Text: b.Text, Data: b.Data})
+		}
+		r.Rows = append(r.Rows, out)
+	}
+	return r
+}
+
+var statusViews = map[string]string{"": status.ViewAll, "agen": status.ViewAgent, "agent": status.ViewAgent, "laptop": status.ViewAgent,
+	"vps": status.ViewVPS, "server": status.ViewVPS, "llm": status.ViewLLM, "24j": status.View24h, "24h": status.View24h}
+
+// statusReply answers /status [agen|vps|llm|24j].
+func statusReply(ctx context.Context, svc *status.Service, args string, log *slog.Logger) bot.Reply {
+	view, ok := statusViews[strings.ToLower(strings.TrimSpace(args))]
+	if !ok {
+		return bot.Reply{Text: "Pakai: /status [agen|vps|llm|24j]"}
+	}
+	c, err := svc.Report(ctx, view)
+	if err != nil {
+		log.Error("status failed", "err", err)
+		return bot.Reply{Text: "Maaf, status belum bisa diambil. Coba lagi sebentar."}
+	}
+	return cardReply(c)
 }

@@ -317,3 +317,21 @@ Gerbang fase (semua lulus, termasuk `-race`):
 Belum diuji langsung di Windows: `Ctrl+V`, pembacaan clipboard, dan item tray baru (tes unit untuk logika bubble dan menu; vet Windows bersih). Memori agen tidak diukur ulang.
 
 Menunggu pemilik **[PEMILIK]**: deploy server (migrasi 0005 otomatis) dan ganti `tunas-agent.exe`; uji penerimaan di DEPLOY.md bagian 20.
+
+## Fase 8g: Status dan konsumsi sumber daya (agen, server, VPS)
+Cabang `phase-8g-status` (dari `phase-8a-log-batch`).
+- [x] Migrasi `0006_stats.sql`: `devices.last_stats`, `stats_samples` (retensi 7 hari, dibersihkan oleh pembersihan harian).
+- [x] **Statistik agen** (`internal/agentstats`, `internal/agent/procstats*.go`): sampel tiap 30 detik, dikirim bersama heartbeat (< 1 KB, bentuk tetap tanpa teks bebas); private bytes dan working set lewat `GetProcessMemoryInfo`, CPU lewat `GetProcessTimes`; hanya proses agen sendiri.
+- [x] **Statistik server** (`internal/sysstats`): cgroup v2 dan v1, CPU dari selisih `usage_usec`, memori Go, pool pgx, ukuran DB dan lima tabel terbesar.
+- [x] **Statistik VPS** tanpa akses Docker/host untuk kontainer: `scripts/host-stats.sh` (cron milik pemilik) menulis `host.json` atomik; server membaca `:ro`, menolak berkas basi (> 5 menit), rusak, terlalu besar (> 64 KB), atau berisi bidang tak dikenal.
+- [x] **`/status [agen|vps|llm|24j]`** dengan tombol Segarkan/Agen/VPS/LLM/24 jam yang mengedit pesan di tempat; ✅/⚠️ terhadap target bagian 9; baris LLM per model, kredit pencarian, backup, umur cache libur.
+- [x] Cuplikan server dan host tiap 5 menit; puncak dan rata-rata 24 jam di `/status 24j`.
+- [x] **Peringatan** (cooldown 1 jam, `/settings ambang` dan `notif_sumber`): memori server > 80%, RAM VPS > 85%, disk > 85%, kontainer tidak sehat, memori agen > 2× target selama 10 menit, LLM harian > 80%.
+- [x] **Laptop:** item tray **Status…**, `/status` di bubble (angka lokal langsung + ringkasan server lewat `GET /v1/agent/status/summary`), `tunas-agent.exe --status` (JSON lokal dari `stats.json`, tanpa token).
+- [x] Compose: volume `/srv/monitor:/monitor:ro`; `HOST_STATS_FILE` di `.env.example`; versi server lewat build-arg.
+
+Gerbang fase (lulus, termasuk `-race`): pembaca cgroup (fixture v2 dan v1), pengurai `host.json` (basi, rusak, besar, bidang asing), pemformat `/status` (target vs aktual, tanda ✅/⚠️, ambang kustom), ambang peringatan dengan jam palsu dan cooldown (termasuk 10 menit agen), payload heartbeat < 1 KB tanpa teks bebas/judul jendela/token, `host.json` tanpa variabel lingkungan, jalur API heartbeat (bentuk kanonis, payload buruk dibuang, cuplikan 5 menit), hook percobaan LLM.
+Biaya pemantauan (benchmark): sampel agen 19 µs / 1,4 KB, snapshot server 30 µs / 0,75 KB.
+
+Belum diuji langsung: angka Private Bytes dan CPU nyata di Windows, item tray Status…, kartu di bubble, cron dan `host.json` di VPS asli.
+Menunggu pemilik **[PEMILIK]**: deploy, cron host-stats, `HOST_STATS_FILE` dan volume compose; penerimaan di DEPLOY.md bagian 21.

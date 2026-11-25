@@ -125,6 +125,10 @@ func (p *Presenter) SubmitWorklog(now time.Time) (string, int64) {
 	return text, id
 }
 
+// IsStatusCommand reports whether chat input is the "/status" command
+// (local numbers and the server summary, no LLM).
+func IsStatusCommand(s string) bool { return strings.EqualFold(strings.TrimSpace(s), "/status") }
+
 // IsLogCommand reports whether chat input is "/log text" (saved straight
 // to the worklog, no LLM).
 func IsLogCommand(s string) bool {

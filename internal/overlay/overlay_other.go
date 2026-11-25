@@ -36,6 +36,9 @@ func (*Overlay) ConfigureSpeech(time.Duration, time.Duration, time.Duration) {}
 // SetIdleClose does nothing.
 func (*Overlay) SetIdleClose(time.Duration) {}
 
+// State is always "off" here.
+func (*Overlay) State() string { return "off" }
+
 // SetConn does nothing.
 func (*Overlay) SetConn(agent.ConnState) {}
 

@@ -93,3 +93,10 @@ func (db *DB) IncrementLLMUsage(ctx context.Context, t time.Time) (int, error) {
 		t.Format("2006-01-02")).Scan(&n)
 	return n, err
 }
+
+// LLMUsageOn returns the request count of the local day of t (0 if none).
+func (db *DB) LLMUsageOn(ctx context.Context, t time.Time) (int, error) {
+	var n int
+	err := db.Pool.QueryRow(ctx, `select coalesce(max(requests), 0) from llm_usage where day = $1::date`, t.Format("2006-01-02")).Scan(&n)
+	return n, err
+}

@@ -213,3 +213,23 @@ func (o *Overlay) saveState() {
 
 // isLocal reports whether the open question is the agent's own.
 func (o *Overlay) isLocal() bool { return strings.HasPrefix(o.p.confirmID, "local:") }
+
+// askStatus is the tray's "Status…": the same as typing /status in the bubble.
+func (o *Overlay) askStatus(now time.Time) {
+	if o.tray.Host == nil {
+		return
+	}
+	if o.p.State == Idle {
+		o.p.OnHotkey(now)
+	}
+	if o.p.State != Input {
+		return // busy with something else; the owner can type /status
+	}
+	o.p.Draft = ""
+	o.p.Type([]rune("/status"), now)
+	if text := o.p.Submit(now); text != "" {
+		ctx, cancel := o.startCall()
+		go o.ask(ctx, cancel, o.p.Req(), text, o.p.Form, o.p.Context())
+	}
+	o.sync(now)
+}

@@ -33,6 +33,7 @@ type Server struct {
 	GitHubBackupRepo   string
 	GitHubBackupBranch string
 	GitHubBackupDir    string
+	HostStatsFile      string // JSON written by scripts/host-stats.sh, mounted read-only (Phase 8g); "" = off
 	LogLevel           slog.Level
 }
 
@@ -61,6 +62,7 @@ func LoadServer(getenv func(string) string) (*Server, error) {
 		GitHubBackupRepo:   get("GITHUB_BACKUP_REPO"),
 		GitHubBackupBranch: orDefault(get("GITHUB_BACKUP_BRANCH"), "main"),
 		GitHubBackupDir:    get("GITHUB_BACKUP_DIR"),
+		HostStatsFile:      get("HOST_STATS_FILE"),
 	}
 
 	for _, k := range []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_OWNER_ID", "DATABASE_URL", "PUBLIC_BASE_URL"} {

@@ -31,9 +31,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Build version
+        run: echo "VERSION=${GITHUB_REF_NAME}-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
       - uses: docker/build-push-action@v7
         with:
           context: .
+          build-args: VERSION=${{ env.VERSION }}
           push: true
           tags: |
             ${{ env.IMAGE }}:latest

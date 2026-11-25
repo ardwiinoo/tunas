@@ -190,3 +190,10 @@ func (b *Buffer) DoneWorklog(ctx context.Context, clientID string) error {
 	_, err := b.db.ExecContext(ctx, `delete from worklog_queue where client_id = ?`, clientID)
 	return err
 }
+
+// CountPending is the number of activity buckets waiting to sync.
+func (b *Buffer) CountPending(ctx context.Context) (int, error) {
+	var n int
+	err := b.db.QueryRowContext(ctx, `select count(*) from buckets where dirty=1`).Scan(&n)
+	return n, err
+}

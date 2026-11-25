@@ -16,6 +16,8 @@ type Host interface {
 	AnswerPrompt(ctx context.Context, id int64, action string) error
 	// MuteWorklog switches today's worklog reminders off ("Senyapkan hari ini").
 	MuteWorklog(ctx context.Context) error
+	// StatusReport is the status card: live local numbers plus the server summary.
+	StatusReport(ctx context.Context) string
 	// Status is the tray's first line, e.g. "Tunas · online · sinkron 12 d lalu".
 	Status() string
 	// SaveState persists the tray switches (state.json).
