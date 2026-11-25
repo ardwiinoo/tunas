@@ -36,6 +36,14 @@ create table if not exists buckets (
   dirty integer not null default 1,
   primary key (bucket_start, app)
 );
+create table if not exists project_buckets (  -- project names only, never window titles
+  bucket_start integer not null,
+  project text not null,
+  editor text not null,                -- lower-case process name
+  active integer not null default 0,
+  dirty integer not null default 1,
+  primary key (bucket_start, project, editor)
+);
 create table if not exists kv (key text primary key, value text not null);
 create table if not exists worklog_queue (   -- worklog entries written on the laptop, until the server confirms
   client_id text primary key,                -- UUID: resending is harmless (server is idempotent)
@@ -196,4 +204,68 @@ func (b *Buffer) CountPending(ctx context.Context) (int, error) {
 	var n int
 	err := b.db.QueryRowContext(ctx, `select count(*) from buckets where dirty=1`).Scan(&n)
 	return n, err
+}
+
+// AddProject accumulates seconds into the minute bucket of a project.
+func (b *Buffer) AddProject(ctx context.Context, minute time.Time, project, editor string, active int) error {
+	_, err := b.db.ExecContext(ctx, `
+		insert into project_buckets(bucket_start, project, editor, active, dirty) values(?, ?, ?, min(60, ?), 1)
+		on conflict(bucket_start, project, editor) do update set active = min(60, active + excluded.active), dirty = 1`,
+		minute.Truncate(time.Minute).Unix(), project, editor, active)
+	return err
+}
+
+// PendingProjects returns up to limit unsynced project buckets, oldest first.
+func (b *Buffer) PendingProjects(ctx context.Context, limit int) ([]ProjectBucket, error) {
+	rows, err := b.db.QueryContext(ctx,
+		`select bucket_start, project, editor, active from project_buckets where dirty=1 order by bucket_start limit ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ProjectBucket
+	for rows.Next() {
+		var pb ProjectBucket
+		var ts int64
+		if err := rows.Scan(&ts, &pb.Project, &pb.Editor, &pb.ActiveSeconds); err != nil {
+			return nil, err
+		}
+		pb.Start = time.Unix(ts, 0).UTC()
+		out = append(out, pb)
+	}
+	return out, rows.Err()
+}
+
+// MarkProjectsSynced clears the dirty flag of buckets that did not change
+// since they were read.
+func (b *Buffer) MarkProjectsSynced(ctx context.Context, bs []ProjectBucket) error {
+	tx, err := b.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	for _, pb := range bs {
+		if _, err := tx.ExecContext(ctx,
+			`update project_buckets set dirty=0 where bucket_start=? and project=? and editor=? and active=?`,
+			pb.Start.Unix(), pb.Project, pb.Editor, pb.ActiveSeconds); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// PruneProjects deletes synced project buckets older than cutoff.
+func (b *Buffer) PruneProjects(ctx context.Context, cutoff time.Time) (int64, error) {
+	res, err := b.db.ExecContext(ctx, `delete from project_buckets where dirty=0 and bucket_start < ?`, cutoff.Unix())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// PurgeProjects forgets every buffered project bucket (recording turned off
+// does not need it, but the owner may want the local copy gone).
+func (b *Buffer) PurgeProjects(ctx context.Context) error {
+	_, err := b.db.ExecContext(ctx, `delete from project_buckets`)
+	return err
 }

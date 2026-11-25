@@ -4,6 +4,9 @@ import (
 	"context"
 	"log/slog"
 	"testing"
+	"time"
+
+	"github.com/ardwiinoo/tunas/internal/projects"
 )
 
 // The cost of monitoring itself (PRD section 9: agent < 0.1% CPU, <= +1 MB).
@@ -29,4 +32,24 @@ func openBenchBuf(b *testing.B) *Buffer {
 	}
 	b.Cleanup(func() { buf.Close() })
 	return buf
+}
+
+// The cost of project recording on each sample (every 10 s): reading the
+// title (a fake here), matching the pattern and one SQLite upsert.
+func BenchmarkRecordProject(b *testing.B) {
+	ext, err := projects.NewExtractor(projects.DefaultEditors())
+	if err != nil {
+		b.Fatal(err)
+	}
+	a := &Agent{Cfg: testCfg(), Log: slog.New(slog.DiscardHandler), Extractor: ext,
+		Titles: projects.ReaderFunc(func() (string, string, error) { return "Code.exe", "project-A - Visual Studio Code", nil })}
+	a.Buf = openBenchBuf(b)
+	a.init()
+	a.SetProjects(true)
+	ctx := context.Background()
+	now := time.Now()
+	b.ReportAllocs()
+	for b.Loop() {
+		a.recordProject(ctx, now, "Code.exe", 10)
+	}
 }

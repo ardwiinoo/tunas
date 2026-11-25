@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/ardwiinoo/tunas/internal/projects"
 )
 
 // Agent is the laptop agent configuration (%APPDATA%\tunas\config.yaml).
@@ -26,6 +28,14 @@ type Agent struct {
 	Bubble                AgentBubble         `yaml:"bubble"`
 	WorklogBubbleInFocus  bool                `yaml:"worklog_bubble_in_focus"` // worklog bubbles also in form fokus
 	Speech                AgentSpeech         `yaml:"speech"`
+	Projects              AgentProjects       `yaml:"projects"`
+}
+
+// AgentProjects lists the editors whose window title may be read (in memory
+// only) to find the project name. Recording itself is off until the owner
+// turns it on in the tray (Fase 8f).
+type AgentProjects struct {
+	Editors []projects.Editor `yaml:"editors"`
 }
 
 // AgentSpeech sets the "bicara" gesture: an answer is typed out over
@@ -100,6 +110,7 @@ func DefaultAgent() *Agent {
 		Animations: true,
 		Bubble:     AgentBubble{IdleCloseSeconds: 60},
 		Speech:     AgentSpeech{MsPerChar: 40, MinSeconds: 2, MaxSeconds: 8},
+		Projects:   AgentProjects{Editors: projects.DefaultEditors()},
 	}
 }
 
@@ -135,6 +146,9 @@ func (c *Agent) Validate() error {
 	u, err := url.Parse(c.ServerURL)
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 		errs = append(errs, errors.New("server_url must be an http(s) URL"))
+	}
+	if _, err := projects.NewExtractor(c.Projects.Editors); err != nil {
+		errs = append(errs, err)
 	}
 	if c.StoreTitles {
 		errs = append(errs, errors.New("store_titles must be false: window titles are never collected"))

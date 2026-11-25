@@ -160,6 +160,7 @@ type Overlay struct {
 	// Set before Run.
 	CharacterOff bool         // tray only: overlay disabled in config.yaml
 	OnPause      func(bool)   // tray "Jeda pelacakan" toggled
+	OnProjects   func(bool)   // tray "Catat proyek editor" toggled
 	OnQuit       func()       // tray "Keluar"
 	LogPath      string       // tray "Buka log" ("" = disabled, e.g. --debug)
 	conn         atomic.Int32 // agent.ConnState, set from any goroutine

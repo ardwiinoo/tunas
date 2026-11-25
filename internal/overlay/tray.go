@@ -80,6 +80,7 @@ const (
 	CmdAutostartFix
 	CmdPause
 	CmdWorklogBubbles
+	CmdProjects
 	CmdWriteWorklog
 	CmdClipboard
 	CmdMuteWorklog
@@ -108,6 +109,7 @@ type MenuInfo struct {
 	AutostartStale bool // the Run value points at another exe
 	Paused         bool
 	WorklogBubbles bool
+	Projects       bool // "Catat proyek editor"
 	CharacterShown bool
 	HasLog         bool
 	HasConfigDir   bool
@@ -133,6 +135,7 @@ func TrayMenu(i MenuInfo) []MenuItem {
 	items = append(items,
 		MenuItem{ID: CmdPause, Text: MenuPause, Checked: i.Paused},
 		MenuItem{ID: CmdWorklogBubbles, Text: "Pengingat worklog di layar", Checked: i.WorklogBubbles},
+		MenuItem{ID: CmdProjects, Text: "Catat proyek editor", Checked: i.Projects},
 		MenuItem{ID: CmdWriteWorklog, Text: "Tulis worklog…"},
 		MenuItem{ID: CmdClipboard, Text: "Tulis worklog dari clipboard"},
 		MenuItem{ID: CmdMuteWorklog, Text: "Senyapkan worklog hari ini"},

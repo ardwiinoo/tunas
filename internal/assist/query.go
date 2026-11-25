@@ -15,7 +15,7 @@ import (
 	"github.com/ardwiinoo/tunas/internal/reminders"
 )
 
-var validTemplates = map[string]bool{"top_apps": true, "longest_session": true, "total_active": true, "by_category": true}
+var validTemplates = map[string]bool{"top_apps": true, "longest_session": true, "total_active": true, "by_category": true, "top_projects": true}
 
 var validRanges = map[string]bool{"today": true, "yesterday": true, "this_week": true, "last_7_days": true, "this_month": true}
 
@@ -44,7 +44,8 @@ func Range(name string, now time.Time, loc *time.Location) (time.Time, time.Time
 const queryPrompt = `Pilih templat query untuk pertanyaan tentang aktivitas laptop pengguna.
 Balas HANYA JSON: {"template":"<templat>","range":"<rentang>"}
 templat: top_apps (aplikasi paling lama dipakai) | longest_session (sesi tanpa putus terpanjang) |
-total_active (total waktu aktif) | by_category (per kategori: kerja/jelajah/hiburan/lainnya)
+total_active (total waktu aktif) | by_category (per kategori: kerja/jelajah/hiburan/lainnya) |
+top_projects (proyek coding yang paling lama dikerjakan)
 rentang: today | yesterday | this_week | last_7_days | this_month`
 
 // ParseQuery strictly validates the template choice.
@@ -105,6 +106,9 @@ func (a *Assistant) answerAs(ctx context.Context, f forms.Form, question, tpl, r
 		a.Log.Error("query failed", "err", err)
 		return "Maaf, ada gangguan saat membaca data."
 	}
+	if tpl == "top_projects" && !a.includeProjects(ctx) {
+		return facts // project names stay off the LLM unless the owner allowed it
+	}
 	return a.phrase(ctx, a.ActiveForm(ctx),
 		"Jawab pertanyaan pengguna dengan singkat (maks 3 kalimat) hanya berdasarkan FAKTA. Pertanyaan: "+question, facts)
 }
@@ -140,6 +144,12 @@ func (a *Assistant) Facts(ctx context.Context, tpl, rng string) (string, error) 
 			fmt.Fprintf(&b, "Sesi terpanjang: %s selama %s, %s %s–%s", l.App, activity.FormatDuration(l.Duration()),
 				reminders.FormatDate(l.Start, now, a.Loc), l.Start.In(a.Loc).Format("15:04"), l.End.In(a.Loc).Format("15:04"))
 		}
+	case "top_projects":
+		text, err := a.projectFacts(ctx, from, to)
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(text)
 	case "total_active":
 		fmt.Fprintf(&b, "Total waktu aktif: %s", activity.FormatDuration(s.TotalActive))
 	case "by_category":

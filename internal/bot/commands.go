@@ -13,6 +13,7 @@ import (
 
 	"github.com/ardwiinoo/tunas/internal/activity"
 	"github.com/ardwiinoo/tunas/internal/agentstatus"
+	"github.com/ardwiinoo/tunas/internal/projreport"
 	"github.com/ardwiinoo/tunas/internal/reminders"
 	"github.com/ardwiinoo/tunas/internal/search"
 	"github.com/ardwiinoo/tunas/internal/status"
@@ -55,6 +56,8 @@ const helpText = `Halo, aku Tunas 🌱
 /libur [YYYY-MM-DD] — tandai libur (tanpa pengingat); /kerja [YYYY-MM-DD] — tandai hari kerja
 /worklog [on|off|jam 10:30,13:30,16:30|penutup 17:30|sync] — pengingat dan cadangan worklog
 /rekap [YYYY-MM] [ai] — rekap worklog bulanan
+/proyek [hari|minggu|bulan] — waktu per proyek coding; /proyek alias|blok|hapus <nama>
+/laporan [on|off|jam HH:MM|sekarang] — laporan akhir hari
 /apps [hari|minggu] — aplikasi yang dipakai dan kategorinya (ketuk tombol untuk mengubah); /kategori <app> <kategori>
 /status — status agen, server, VPS, dan LLM (tombol: Segarkan/Agen/VPS/LLM/24 jam)
 /settings — pengaturan (mis. kabar laptop offline/online)
@@ -267,9 +270,13 @@ func (c *Commands) status(ctx context.Context) (string, error) {
 }
 
 // settingDefs are the switches /settings can change.
-var settingDefs = []struct{ name, key, desc string }{
-	{"notif_status", agentstatus.SettingNotify, "kabar saat laptop offline > 15 menit / kembali online"},
-	{"notif_sumber", status.KeyAlertsOn, "peringatan memori, disk, kontainer, dan pemakaian LLM"},
+var settingDefs = []struct {
+	name, key, desc string
+	off             bool // the default is off
+}{
+	{"notif_status", agentstatus.SettingNotify, "kabar saat laptop offline > 15 menit / kembali online", false},
+	{"notif_sumber", status.KeyAlertsOn, "peringatan memori, disk, kontainer, dan pemakaian LLM", false},
+	{"proyek_llm", projreport.KeyIncludeLLM, "izinkan nama proyek dikirim ke AI saat /tanya (bawaan: mati)", true},
 }
 
 func (c *Commands) settings(ctx context.Context, args string) (string, error) {
@@ -278,7 +285,7 @@ func (c *Commands) settings(ctx context.Context, args string) (string, error) {
 		var b strings.Builder
 		b.WriteString("Pengaturan:")
 		for _, d := range settingDefs {
-			on := true
+			on := !d.off
 			if _, err := c.DB.GetSetting(ctx, d.key, &on); err != nil {
 				return "", err
 			}
@@ -375,5 +382,13 @@ func (c *Commands) today(ctx context.Context) (string, error) {
 		return "", err
 	}
 	title := "📊 Hari ini (" + reminders.FormatDate(now, now, c.Loc) + ")"
-	return activity.FormatToday(activity.Summarize(bs), title, c.Loc), nil
+	out := activity.FormatToday(activity.Summarize(bs), title, c.Loc)
+	ps, err := c.DB.ProjectTotalsBetween(ctx, from, to)
+	if err != nil {
+		return "", err
+	}
+	if sec := projreport.Section(ps, 5); sec != "" {
+		out += "\n\n" + sec
+	}
+	return out, nil
 }

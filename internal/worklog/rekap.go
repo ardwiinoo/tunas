@@ -9,6 +9,7 @@ import (
 
 	"github.com/ardwiinoo/tunas/internal/bot"
 	"github.com/ardwiinoo/tunas/internal/llm"
+	"github.com/ardwiinoo/tunas/internal/projreport"
 )
 
 // TelegramLimit is the longest message; a longer recap goes as a document.
@@ -68,6 +69,12 @@ func (s *Service) Rekap(ctx context.Context, month time.Time) (string, error) {
 	}
 	if len(days) == 0 {
 		b.WriteString("\nBelum ada catatan bulan ini.\n")
+	}
+	pf := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, s.Loc)
+	if ps, err := s.DB.ProjectTotalsBetween(ctx, pf, pf.AddDate(0, 1, 0)); err == nil {
+		if sec := projreport.Section(ps, 8); sec != "" {
+			b.WriteString("\n" + sec + "\n")
+		}
 	}
 	return strings.TrimRight(b.String(), "\n"), nil
 }

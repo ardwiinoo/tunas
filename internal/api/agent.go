@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/ardwiinoo/tunas/internal/agentstats"
 	"github.com/ardwiinoo/tunas/internal/apps"
 	"github.com/ardwiinoo/tunas/internal/llm"
+	"github.com/ardwiinoo/tunas/internal/projects"
 	"github.com/ardwiinoo/tunas/internal/store"
 )
 
@@ -44,6 +46,7 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /v1/agent/state", s.auth(s.getState))
 	mux.Handle("POST /v1/agent/heartbeat", s.auth(s.postHeartbeat))
 	mux.Handle("POST /v1/agent/categories/seed", s.auth(s.postSeedCategories))
+	mux.Handle("POST /v1/agent/projects", s.auth(s.postProjects))
 	if s.summary != nil {
 		mux.Handle("GET /v1/agent/status/summary", s.auth(s.getStatusSummary))
 	}
@@ -211,12 +214,67 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
+	blocklist, err := s.db.ProjectBlocklist(r.Context())
+	if err != nil {
+		s.log.Error("get project blocklist failed", "err", err)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
 	etag := store.CategoriesETag(cats)
-	out := map[string]any{"form_override": override, "now": s.now(), "categories_etag": etag}
+	out := map[string]any{"form_override": override, "now": s.now(), "categories_etag": etag, "project_blocklist": blocklist}
 	if r.URL.Query().Get("categories_etag") != etag { // the agent already has this mapping otherwise
 		out["app_categories"] = cats
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+var reEditor = regexp.MustCompile(`^[a-z0-9][a-z0-9._ +-]{0,59}$`)
+
+// ValidateProjectBuckets checks a project upload. Only a project name and an
+// editor's process name are accepted: names that look like paths or are too
+// long are refused, so a window title cannot ride along.
+func ValidateProjectBuckets(bs []store.ProjectBucket, now time.Time) error {
+	if len(bs) > maxBucketsPerBatch {
+		return errors.New("too many buckets")
+	}
+	for _, b := range bs {
+		name, ok := projects.Clean(b.Project)
+		switch {
+		case b.Start.IsZero() || !b.Start.Equal(b.Start.Truncate(time.Minute)):
+			return errors.New("bucket_start must be minute-aligned")
+		case b.Start.After(now.Add(5*time.Minute)) || b.Start.Before(now.Add(-maxBucketAge)):
+			return errors.New("bucket_start out of range")
+		case !ok || name != b.Project:
+			return errors.New("invalid project")
+		case !reEditor.MatchString(b.Editor):
+			return errors.New("invalid editor")
+		case b.ActiveSeconds < 0 || b.ActiveSeconds > 60:
+			return errors.New("invalid seconds")
+		}
+	}
+	return nil
+}
+
+// postProjects stores the agent's per-minute project time.
+func (s *Server) postProjects(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Buckets []store.ProjectBucket `json:"buckets"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := ValidateProjectBuckets(req.Buckets, s.now()); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	d := deviceFrom(r.Context())
+	n, err := s.db.UpsertProjectBuckets(r.Context(), d.ID, req.Buckets)
+	if err != nil {
+		s.log.Error("upsert project buckets failed", "err", err)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"accepted": n})
 }
 
 // maxSeedApps bounds one seed request.
