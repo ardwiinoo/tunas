@@ -250,7 +250,7 @@ func TestSearchSucceedsFromTelegramAndBubbleWhenTheCallerHasLittleTimeLeft(t *te
 		start := time.Now()
 		r := run(a, ctx)
 		cancel()
-		if !strings.HasPrefix(r.Text, "Ringkasan [1] dan [2].") || !strings.Contains(r.Text, "https://a.id/x") {
+		if !strings.HasPrefix(r.Text, "Ringkasan [1] dan [2].") || !strings.Contains(r.WithSources(), "https://a.id/x") {
 			t.Errorf("%s: %q", name, r.Text)
 		}
 		if el := time.Since(start); el < time.Second || el > 2500*time.Millisecond {
