@@ -8,11 +8,14 @@ import (
 	"github.com/ardwiinoo/tunas/internal/agent"
 )
 
+// testFontPx is the bubble font size (fontSize lives in the Windows-only file).
+const testFontPx = 14
+
 // The card must draw without a window: month grid and day panel render into
 // a canvas, stay inside the card, and use only glyphs the font has.
 func newCanvas(t *testing.T) (*Canvas, func(string) float64, float64) {
 	t.Helper()
-	face, err := NewFace(fontSize)
+	face, err := NewFace(testFontPx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +52,7 @@ func loadedMonth() *Calendar {
 
 func TestGridDrawsInsideTheCard(t *testing.T) {
 	c, measure, s := newCanvas(t)
-	face, _ := NewFace(fontSize)
+	face, _ := NewFace(testFontPx)
 	cal := loadedMonth()
 	cal.Sel = 5
 	DrawCalendar(c, cal, face, measure, s)
@@ -82,7 +85,7 @@ func TestGridDrawsInsideTheCard(t *testing.T) {
 	}
 	// at 150% scale the card is proportionally larger, still inside the canvas
 	big := NewCanvas(int(WindowW*1.5), int(WindowH*1.5))
-	bigFace, _ := NewFace(fontSize * 1.5)
+	bigFace, _ := NewFace(testFontPx * 1.5)
 	DrawCalendar(big, cal, bigFace, measure, 1.5)
 	if _, _, x1, y1, n := opaqueBounds(big); n < 10000 || x1 >= big.Img.Bounds().Dx() || y1 >= big.Img.Bounds().Dy() {
 		t.Errorf("1.5x: %d px, extent %d,%d", n, x1, y1)
@@ -91,7 +94,7 @@ func TestGridDrawsInsideTheCard(t *testing.T) {
 
 func TestDayPanelDrawsEntriesAndInput(t *testing.T) {
 	c, measure, s := newCanvas(t)
-	face, _ := NewFace(fontSize)
+	face, _ := NewFace(testFontPx)
 	cal := calAt(2026, time.November, 17)
 	cal.Key(KeyEnter)
 	long := strings.Repeat("perbaikan bug sinkronisasi ", 6)
@@ -133,7 +136,7 @@ func TestDayPanelDrawsEntriesAndInput(t *testing.T) {
 }
 
 func TestCalendarTextsHaveGlyphs(t *testing.T) {
-	face, err := NewFace(fontSize)
+	face, err := NewFace(testFontPx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +158,7 @@ func TestCalendarTextsHaveGlyphs(t *testing.T) {
 }
 
 func TestClipAndPreview(t *testing.T) {
-	face, _ := NewFace(fontSize)
+	face, _ := NewFace(testFontPx)
 	m := Measurer(face)
 	if got := clip("pendek", m, 200); got != "pendek" {
 		t.Errorf("short: %q", got)
