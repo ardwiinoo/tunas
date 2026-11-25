@@ -3,6 +3,7 @@
 package overlay
 
 import (
+	"context"
 	"time"
 	"unsafe"
 
@@ -210,6 +211,21 @@ func (o *Overlay) trayCommand(cmd int, info MenuInfo) {
 	case CmdWorklogBubbles:
 		o.tray.State.WorklogBubbles = !o.tray.State.WorklogBubbles
 		o.saveState()
+	case CmdMuteWorklog:
+		if o.tray.Host != nil {
+			go func() {
+				ctx, cancel := context.WithTimeout(o.ctx, 15*time.Second)
+				defer cancel()
+				if err := o.tray.Host.MuteWorklog(ctx); err != nil {
+					o.log.Info("worklog not muted (server unreachable)", "err", err)
+				}
+			}()
+		}
+		o.p.Note(TextWorklogMuted, now)
+		o.sync(now)
+	case CmdClipboard:
+		o.clipboardWorklog(now)
+		pSetForegroundWindow.Call(o.hwnd) //nolint:errcheck
 	case CmdWriteWorklog:
 		o.p.OpenWorklog(0, now)
 		o.sync(now)

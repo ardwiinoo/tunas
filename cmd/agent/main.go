@@ -213,6 +213,8 @@ func (h *host) AnswerPrompt(ctx context.Context, id int64, action string) error 
 	return h.client.AnswerPrompt(ctx, id, action)
 }
 
+func (h *host) MuteWorklog(ctx context.Context) error { return h.client.MuteWorklog(ctx) }
+
 func (h *host) Status() string { return h.a.StatusLine(time.Now()) }
 
 func (h *host) SaveState(st agent.UIState) {

@@ -20,6 +20,7 @@ const (
 	KeyClosing   = "worklog.closing_time"
 	KeyMinGap    = "worklog.min_gap_minutes"
 	KeyMaxPerDay = "worklog.max_prompts_per_day"
+	KeyMuted     = "worklog.muted_date" // "YYYY-MM-DD": no reminders that day (Senyapkan hari ini)
 )
 
 // SlotClosing is the closing reminder after a postponed last slot.
@@ -118,22 +119,28 @@ func (r *Reminder) Tick(ctx context.Context) error {
 	if !rules.IsWorkday(day) {
 		return nil
 	}
+	var muted string
+	if _, err := s.DB.GetSetting(ctx, KeyMuted, &muted); err != nil {
+		return err
+	}
+	if muted == key(day) {
+		return nil // "Senyapkan hari ini"
+	}
 	prompts, err := s.DB.PromptsOn(ctx, day)
 	if err != nil {
 		return err
 	}
 	handled := map[string]store.WorklogPrompt{}
-	skipped, sent := false, 0
+	sent := 0
 	for _, p := range prompts {
 		handled[p.Slot] = p
-		skipped = skipped || p.Status == "skipped"
 		if wasSent(p) {
 			sent++
 		}
 	}
 	slots := append([]string(nil), st.Times...)
-	if last, ok := handled[lastSlot(st)]; ok && last.Status == "later" {
-		slots = append(slots, SlotClosing) // only after the last slot was postponed
+	if last, ok := handled[lastSlot(st)]; ok && (last.Status == "skipped" || last.Status == "later") {
+		slots = append(slots, SlotClosing) // only after the last slot was skipped
 	}
 	for _, slot := range slots {
 		if _, done := handled[slot]; done {
@@ -158,8 +165,6 @@ func (r *Reminder) Tick(ctx context.Context) error {
 		switch {
 		case now.Sub(due) > CatchUp:
 			reason = "late"
-		case skipped:
-			reason = "skipped today"
 		case !lastAt.IsZero() && now.Sub(lastAt) < st.MinGap:
 			reason = "recent entry"
 		case sent >= st.MaxPerDay:
@@ -236,18 +241,19 @@ func PromptReply(id int64, day time.Time, clock string, count int, lastAt time.T
 	}
 	b.WriteString("Lagi ngerjain apa?")
 	write := bot.Button{Text: "✍️ Tulis sekarang", Data: fmt.Sprintf("wlw:%d", id)}
-	skip := bot.Button{Text: "🙈 Lewati hari ini", Data: fmt.Sprintf("wls:%d", id)}
-	if closing {
-		return bot.Reply{Text: b.String(), Rows: [][]bot.Button{{write, skip}}}
+	if closing { // the last one of the day: write, or silence the rest of today
+		return bot.Reply{Text: b.String(), Rows: [][]bot.Button{{write, {Text: "😴 Senyapkan hari ini", Data: fmt.Sprintf("wlm:%d", id)}}}}
 	}
-	later := bot.Button{Text: "⏭ Nanti", Data: fmt.Sprintf("wln:%d", id)}
-	return bot.Reply{Text: b.String(), Rows: [][]bot.Button{{write, later, skip}}}
+	// Lewati skips this slot only; the next slot still reminds
+	return bot.Reply{Text: b.String(), Rows: [][]bot.Button{{write, {Text: "⏭ Lewati", Data: fmt.Sprintf("wls:%d", id)}}}}
 }
 
-// Callback handles the prompt buttons wlw/wln/wls.
+// Callback handles the prompt buttons: wlw (write), wls (Lewati: this slot
+// only), wlm (Senyapkan hari ini), wlc (cancel writing) and wln (the old
+// "Nanti" of messages sent before 8a: the same as Lewati).
 func (r *Reminder) Callback(ctx context.Context, data string) (bot.Reply, bool) {
 	verb, arg, _ := strings.Cut(data, ":")
-	if verb != "wlw" && verb != "wln" && verb != "wls" && verb != "wlc" {
+	if verb != "wlw" && verb != "wln" && verb != "wls" && verb != "wlc" && verb != "wlm" {
 		return bot.Reply{}, false
 	}
 	id, err := strconv.ParseInt(arg, 10, 64)
@@ -264,7 +270,7 @@ func (r *Reminder) Callback(ctx context.Context, data string) (bot.Reply, bool) 
 		if err := s.DB.SetPending(ctx, s.ChatID, PendingWrite, pendingPayload{PromptID: id}, s.Now().Add(pendingTTL)); err != nil {
 			return errReply(s, "pending", err), true
 		}
-		return bot.Reply{Text: "✍️ Kirim catatanmu sekarang (satu pesan = satu catatan).",
+		return bot.Reply{Text: "✍️ Kirim catatanmu sekarang. Satu baris = satu catatan; boleh tempel beberapa baris.",
 			Rows: [][]bot.Button{{{Text: "❌ Batal", Data: fmt.Sprintf("wlc:%d", id)}}}}, true
 	case "wlc": // cancel writing: the reminder comes back with its buttons
 		if err := s.DB.ClearPending(ctx, s.ChatID); err != nil {
@@ -282,13 +288,13 @@ func (r *Reminder) Callback(ctx context.Context, data string) (bot.Reply, bool) 
 			}
 		}
 		return PromptReply(id, day, clock, count, lastAt.In(s.Loc), p.Slot == SlotClosing), true
-	case "wln":
-		text, err := r.Answer(ctx, id, "later", "telegram")
+	case "wlm":
+		text, err := r.Mute(ctx, "telegram")
 		if err != nil {
-			return errReply(s, "later", err), true
+			return errReply(s, "mute", err), true
 		}
 		return bot.Reply{Text: text}, true
-	default:
+	default: // wls, and the old wln
 		text, err := r.Answer(ctx, id, "skip", "telegram")
 		if err != nil {
 			return errReply(s, "skip", err), true
@@ -300,29 +306,60 @@ func (r *Reminder) Callback(ctx context.Context, data string) (bot.Reply, bool) 
 // ErrPromptClosed means the prompt was already answered, skipped or expired.
 var ErrPromptClosed = errors.New("prompt already closed")
 
-// Answer applies "later" or "skip" from Telegram or the agent, tells the
-// other side (event or message edit) and returns the new message text.
+// Answer applies an answer to a prompt from Telegram or the agent: "skip"
+// (Lewati: this slot only; "later" is the same, for older agents) or "mute"
+// (Senyapkan hari ini). It tells the other side (event or message edit)
+// and returns the new message text.
 func (r *Reminder) Answer(ctx context.Context, id int64, action, via string) (string, error) {
 	s := r.Svc
-	status := map[string]string{"later": "later", "skip": "skipped"}[action]
-	if status == "" {
+	switch action {
+	case "mute":
+		return r.Mute(ctx, via)
+	case "skip", "later":
+	default:
 		return "", fmt.Errorf("unknown action %q", action)
 	}
-	p, err := s.DB.AnswerPrompt(ctx, id, status, via, s.Now())
+	p, err := s.DB.AnswerPrompt(ctx, id, "skipped", via, s.Now())
 	if errors.Is(err, store.ErrNotFound) {
 		return "", ErrPromptClosed
 	}
 	if err != nil {
 		return "", err
 	}
-	text := "🙈 Dilewati untuk hari ini."
-	if status == "later" {
-		text = "⏭ Ditunda ke pengingat berikutnya."
-		if st, err := r.LoadSettings(ctx); err == nil && p.Slot == lastSlot(st) {
-			text = "⏭ Ditunda. Pengingat penutup jam " + st.Closing + "."
+	text := "⏭ Dilewati, aku ingatkan lagi di slot berikutnya."
+	if st, err := r.LoadSettings(ctx); err == nil {
+		switch p.Slot {
+		case lastSlot(st):
+			text = "⏭ Dilewati. Pengingat penutup jam " + st.Closing + "."
+		case SlotClosing:
+			text = "⏭ Dilewati."
 		}
 	}
 	r.closed(ctx, p, via, text)
+	return text, nil
+}
+
+// Mute switches today's reminders off ("Senyapkan hari ini": the closing
+// button, /worklog senyap, the tray item). Open prompts are closed.
+func (r *Reminder) Mute(ctx context.Context, via string) (string, error) {
+	s := r.Svc
+	day := LocalDate(s.Now(), s.Loc)
+	if err := s.DB.SetSetting(ctx, KeyMuted, key(day)); err != nil {
+		return "", err
+	}
+	text := "😴 Pengingat worklog disenyapkan untuk hari ini."
+	prompts, err := s.DB.PromptsOn(ctx, day)
+	if err != nil {
+		return "", err
+	}
+	for _, p := range prompts {
+		if !open(p) {
+			continue
+		}
+		if _, err := s.DB.AnswerPrompt(ctx, p.ID, "skipped", via, s.Now()); err == nil {
+			r.closed(ctx, p, via, text)
+		}
+	}
 	return text, nil
 }
 
@@ -387,6 +424,17 @@ func (r *Reminder) Command(ctx context.Context, args string) bot.Reply {
 			return bot.Reply{Text: "Cadangan GitHub belum diaktifkan (GITHUB_BACKUP_TOKEN/GITHUB_BACKUP_REPO kosong)."}
 		}
 		return bot.Reply{Text: r.Sync(ctx, Month(LocalDate(s.Now(), s.Loc)), len(f) > 1 && f[1] == "force")}
+	case f[0] == "senyap" && len(f) == 1:
+		text, err := r.Mute(ctx, "telegram")
+		if err != nil {
+			return errReply(s, "mute", err)
+		}
+		return bot.Reply{Text: text + " (Nyalakan lagi: /worklog senyap hapus)"}
+	case f[0] == "senyap" && len(f) == 2 && f[1] == "hapus":
+		if err := s.DB.DeleteSetting(ctx, KeyMuted); err != nil {
+			return errReply(s, "mute", err)
+		}
+		return r.status(ctx, "🔔 Pengingat hari ini dinyalakan lagi.\n")
 	case f[0] == "on" || f[0] == "off":
 		return set(KeyEnabled, f[0] == "on")
 	case f[0] == "jam" && len(f) >= 2:
@@ -410,7 +458,7 @@ func (r *Reminder) Command(ctx context.Context, args string) bot.Reply {
 		}
 		return set(KeyClosing, fmt.Sprintf("%02d:%02d", h, m))
 	}
-	return bot.Reply{Text: "Pakai: /worklog [on|off] · /worklog jam 10:30,13:30,16:30 · /worklog penutup 17:30 · /worklog sync [force]"}
+	return bot.Reply{Text: "Pakai: /worklog [on|off] · /worklog jam 10:30,13:30,16:30 · /worklog penutup 17:30 · /worklog senyap (matikan pengingat hari ini) · /worklog sync [force]"}
 }
 
 func (r *Reminder) status(ctx context.Context, prefix string) bot.Reply {
@@ -422,7 +470,13 @@ func (r *Reminder) status(ctx context.Context, prefix string) bot.Reply {
 	if !st.Enabled {
 		state = "mati"
 	}
-	return bot.Reply{Text: fmt.Sprintf("%s📝 Pengingat worklog: %s\nJam: %s · penutup %s (bila slot terakhir ditunda)\nHanya di hari kerja; tidak dikirim bila ada catatan %d menit terakhir; maks %d per hari.",
+	var muted string
+	if _, err := r.Svc.DB.GetSetting(ctx, KeyMuted, &muted); err == nil && muted == key(LocalDate(r.Svc.Now(), r.Svc.Loc)) {
+		state += " (disenyapkan untuk hari ini)"
+	}
+	return bot.Reply{Text: fmt.Sprintf("%s📝 Pengingat worklog: %s\nJam: %s · penutup %s (hanya bila slot terakhir dilewati)\n"+
+		"Hanya di hari kerja; tidak dikirim bila ada catatan %d menit terakhir; maks %d per hari. "+
+		"Lewati hanya melewati slot itu; /worklog senyap mematikan sisa hari ini.",
 		prefix, state, strings.Join(st.Times, ", "), st.Closing, int(st.MinGap/time.Minute), st.MaxPerDay)}
 }
 

@@ -192,7 +192,9 @@ type Overlay struct {
 	surrogate uint16
 
 	reqCancel context.CancelFunc // cancels the in-flight chat/confirm (Esc)
-	visibleMs uintptr            // timer period while visible
+	clipText  string             // the clipboard paste waiting for Enter/Esc
+	clipCount int
+	visibleMs uintptr // timer period while visible
 
 	// tray and worklog
 	tray       TrayOptions
@@ -415,6 +417,13 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 }
 
 func (o *Overlay) onChar(u uint16, now time.Time) {
+	if u == 0x16 && o.p.Typing() { // Ctrl+V: paste, keeping the lines of a worklog
+		if text, err := readClipboard(); err == nil {
+			o.p.Paste(text, now)
+			o.sync(now)
+		}
+		return
+	}
 	if o.worklogChar(u, now) {
 		o.sync(now)
 		return

@@ -14,6 +14,8 @@ type Host interface {
 	WriteWorklog(ctx context.Context, text string, promptID int64) (agent.WriteResult, error)
 	// AnswerPrompt answers a worklog reminder: "later" | "skip".
 	AnswerPrompt(ctx context.Context, id int64, action string) error
+	// MuteWorklog switches today's worklog reminders off ("Senyapkan hari ini").
+	MuteWorklog(ctx context.Context) error
 	// Status is the tray's first line, e.g. "Tunas · online · sinkron 12 d lalu".
 	Status() string
 	// SaveState persists the tray switches (state.json).

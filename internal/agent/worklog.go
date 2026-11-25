@@ -13,6 +13,7 @@ import (
 type WorklogSaved struct {
 	ID        int64 `json:"id"`
 	Count     int   `json:"count"`
+	Entries   int   `json:"entries"`
 	Duplicate bool  `json:"duplicate"`
 }
 
@@ -23,7 +24,13 @@ func (c *Client) PostWorklog(ctx context.Context, it WorklogItem) (WorklogSaved,
 	return out, err
 }
 
-// AnswerPrompt answers a worklog reminder from the bubble ("later"|"skip").
+// MuteWorklog switches today's worklog reminders off (tray "Senyapkan hari ini").
+func (c *Client) MuteWorklog(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, "/v1/agent/worklog/mute", map[string]string{}, nil)
+}
+
+// AnswerPrompt answers a worklog reminder from the bubble ("skip": this slot
+// only; "mute": no more reminders today).
 func (c *Client) AnswerPrompt(ctx context.Context, id int64, action string) error {
 	return c.do(ctx, http.MethodPost, fmt.Sprintf("/v1/agent/worklog/prompts/%d/answer", id), map[string]string{"action": action}, nil)
 }
@@ -32,6 +39,7 @@ func (c *Client) AnswerPrompt(ctx context.Context, id int64, action string) erro
 type WorklogAPI interface {
 	PostWorklog(ctx context.Context, it WorklogItem) (WorklogSaved, error)
 	AnswerPrompt(ctx context.Context, id int64, action string) error
+	MuteWorklog(ctx context.Context) error
 }
 
 // newClientID returns a random UUID (version 4).
@@ -47,7 +55,8 @@ func newClientID() string {
 type WriteResult struct {
 	Synced bool   // the server confirmed: "Tersimpan ✓"
 	Queued bool   // kept locally: "Tersimpan ✓ (menunggu sinkron)"
-	Count  int    // entries today (when synced)
+	Count  int    // entries on the first day of the paste (when synced)
+	Saved  int    // entries stored by this paste (when synced)
 	Reject string // the server refused it (e.g. too long): nothing kept
 }
 
@@ -97,7 +106,7 @@ func (a *Agent) sendWorklog(ctx context.Context, it WorklogItem) (WriteResult, e
 	if saved.Duplicate {
 		a.Log.Info("worklog resend acknowledged (already saved)")
 	}
-	return WriteResult{Synced: true, Count: saved.Count}, nil
+	return WriteResult{Synced: true, Count: saved.Count, Saved: saved.Entries}, nil
 }
 
 // FlushWorklog sends every queued entry, oldest first; it stops at the

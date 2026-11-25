@@ -287,3 +287,33 @@ Gerbang (semua lulus, termasuk `-race`):
 Belum diuji langsung di layar Windows: gestur bicara dan kaca pembesar (hanya tes unit + gambar pose), dan `/cari` dengan kunci Tavily asli (tidak ada kunci di mesin ini). Memori agen belum diukur ulang untuk perubahan ini.
 
 Menunggu pemilik **[PEMILIK]** (DEPLOY.md bagian 19): isi `TAVILY_API_KEY`, recreate kontainer, uji `/cari`, ganti `tunas-agent.exe`.
+
+## Fase 8: Peningkatan dari pemakaian nyata
+### Fase 8a: Worklog multi-baris dan pengingat yang lebih sabar [x] (kode selesai; penerimaan di produksi menunggu deploy)
+- [x] `/log` multi-baris (`internal/logbatch`, paket murni yang juga dipakai agen):
+  - tiap baris tak kosong = satu catatan; awalan `-`, `*`, `•`, `1.`, `1)` dibuang;
+  - baris yang hanya berisi `YYYY-MM-DD`, `kemarin`, atau `hari ini` menetapkan tanggal baris di bawahnya; baris pertama juga boleh `kemarin teks`;
+  - batas 50 catatan per pesan dan 2000 karakter per catatan; kelebihan ditolak seluruhnya dengan pesan yang menyebut barisnya, tidak pernah disimpan sebagian; tanggal masa depan ditolak.
+- [x] Konfirmasi:
+  - satu catatan, atau ≤ 10 tanpa penanda tanggal → langsung tersimpan, `✅ N catatan tersimpan` + `↩️ Batalkan semua` (hanya menghapus catatan dari tempelan itu, lewat kolom `batch_id`);
+  - > 10 catatan atau ada penanda tanggal → pratinjau ringkas (jumlah per tanggal) dengan `Simpan` / `Batal` (disimpan di tabel `worklog_batches`, kedaluwarsa 30 menit, sekali pakai).
+- [x] Pesan teks setelah `Tulis sekarang` dan `Tambah` memakai aturan yang sama; `Edit` tetap satu catatan (baris baru jadi spasi).
+- [x] Idempotensi: server memecah tempelan dari agen dan memberi tiap catatan `client_id` turunan (UUID v5 dari `client_id` paket + nomor baris), jadi kirim ulang dari antrean offline tidak menggandakan.
+- [x] Laptop: item tray **Tulis worklog dari clipboard** (pratinjau di bubble, Enter simpan, Esc batal); kotak input bubble dan `/log` menerima `Ctrl+V` multi-baris (maks 8000 karakter); jumlah catatan tampil ("8 catatan tersimpan √").
+- [x] Pengingat lebih sabar (PRD 6.5):
+  - tombol **Lewati** hanya melewati slot itu, slot berikutnya tetap mengingatkan;
+  - pengingat penutup (17:30) muncul hanya bila slot terakhir dilewati, dengan tombol `Tulis sekarang` dan `😴 Senyapkan hari ini`;
+  - **Senyapkan hari ini** lewat tombol penutup, `/worklog senyap` (`senyap hapus` untuk membatalkan), item tray "Senyapkan worklog hari ini", atau aksi `mute` dari agen; disimpan di `worklog.muted_date` (hanya berlaku hari itu);
+  - bubble: Enter = tulis, N atau Esc = Lewati, S = senyapkan hari ini;
+  - tombol "Nanti" dan "Lewati hari ini" lama dihapus; tombol `wln` pada pesan lama dianggap Lewati.
+
+Gerbang fase (semua lulus, termasuk `-race`):
+- tes tabel pengurai: berbagai bentuk bullet, penanda tanggal (juga di baris pertama), baris kosong, batas 50 dan 2000 (dalam karakter, bukan byte), tanggal masa depan ditolak;
+- tes undo hanya menghapus entri paket itu (entri lama tetap ada, undo kedua → "sudah tidak ada");
+- tes idempotensi `client_id` turunan (kirim ulang dua kali → tepat 3 baris, termasuk lewat antrean offline agen);
+- tes semantik Lewati/Senyapkan dengan jam palsu (Lewati 10:30 tetap memunculkan 13:30; penutup hanya setelah slot terakhir dilewati; senyap hanya hari itu; jawaban dari agen mengedit pesan Telegram);
+- tes pratinjau: > 10 atau bertanggal menunggu `Simpan`, `Batal` tidak menyimpan, pratinjau kedaluwarsa/sekali pakai ditolak; tolak tanpa simpan sebagian.
+
+Belum diuji langsung di Windows: `Ctrl+V`, pembacaan clipboard, dan item tray baru (tes unit untuk logika bubble dan menu; vet Windows bersih). Memori agen tidak diukur ulang.
+
+Menunggu pemilik **[PEMILIK]**: deploy server (migrasi 0005 otomatis) dan ganti `tunas-agent.exe`; uji penerimaan di DEPLOY.md bagian 20.

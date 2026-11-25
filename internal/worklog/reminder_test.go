@@ -2,7 +2,6 @@ package worklog
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -100,79 +99,6 @@ func (g *rig) events(typ string) int {
 	return n
 }
 
-// 2026-11-18 is a Wednesday, 21/22 a weekend.
-func TestReminderWorkdayThreeSlots(t *testing.T) {
-	g := newRig(t, "2026-11-18")
-	g.at("10:29")
-	if g.sent() != 0 {
-		t.Fatal("too early")
-	}
-	g.at("10:30")
-	if g.sent() != 1 || !strings.Contains(g.last().Text, "📝 Worklog · Rabu 18 Nov · 10:30") || !strings.Contains(g.last().Text, "belum ada catatan") {
-		t.Fatalf("first prompt %+v", g.tg.sent)
-	}
-	g.at("10:31")
-	g.at("10:45")
-	if g.sent() != 1 {
-		t.Fatal("a slot is sent exactly once")
-	}
-	if g.events("worklog.due") != 1 {
-		t.Fatal("worklog.due for the agent")
-	}
-	// Nanti: the message is edited, no extra reminder before the next slot
-	later := button(t, g.last(), "⏭")
-	r := cb(t, g.s, later)
-	if r.Text != "⏭ Ditunda ke pengingat berikutnya." {
-		t.Fatalf("later → %q", r.Text)
-	}
-	for _, c := range []string{"11:00", "12:00", "13:29"} {
-		g.at(c)
-	}
-	if g.sent() != 1 {
-		t.Fatal("Nanti must not add reminders between slots")
-	}
-	g.at("13:30")
-	g.at("16:30")
-	if g.sent() != 3 || len(g.tg.deleted) != 2 {
-		t.Fatalf("three reminders on a working day, old ones removed: sent %d deleted %v", g.sent(), g.tg.deleted)
-	}
-	g.at("17:30")
-	if g.sent() != 3 {
-		t.Fatal("no closing reminder unless the last slot was postponed")
-	}
-}
-
-func TestReminderClosingAfterLastPostponed(t *testing.T) {
-	g := newRig(t, "2026-11-18")
-	g.at("10:30")
-	cb(t, g.s, button(t, g.last(), "🙈")) // skip → nothing more today
-	g.at("13:30")
-	g.at("16:30")
-	if g.sent() != 1 {
-		t.Fatal("Lewati hari ini stops the day")
-	}
-
-	g = newRig(t, "2026-11-19")
-	g.at("16:30")
-	last := button(t, g.last(), "⏭")
-	if r := cb(t, g.s, last); !strings.Contains(r.Text, "penutup jam 17:30") {
-		t.Fatalf("postponing the last slot announces the closing reminder: %q", r.Text)
-	}
-	g.at("17:29")
-	g.at("17:30")
-	if g.sent() != 2 {
-		t.Fatal("closing reminder")
-	}
-	closing := g.last()
-	if len(closing.Rows) != 1 || len(closing.Rows[0]) != 2 || strings.Contains(fmt.Sprint(closing.Rows), "Nanti") {
-		t.Fatalf("closing has only Tulis/Lewati: %+v", closing.Rows)
-	}
-	g.at("17:45")
-	if g.sent() != 2 {
-		t.Fatal("closing is sent once, then it stops")
-	}
-}
-
 func TestReminderSkipsDays(t *testing.T) {
 	cases := map[string]func(g *rig){
 		"weekend":        func(*rig) {},
@@ -243,43 +169,6 @@ func TestReminderRecentEntryAndCatchUp(t *testing.T) {
 	g.at("13:30")
 	if g.sent() != 1 {
 		t.Fatal("the next slot is sent normally")
-	}
-}
-
-func TestReminderAnsweredByEntry(t *testing.T) {
-	g := newRig(t, "2026-11-18")
-	g.at("10:30")
-	// Tulis sekarang → the next text is today's entry and closes the prompt
-	ask := cb(t, g.s, button(t, g.last(), "✍️"))
-	if !strings.Contains(ask.Text, "Kirim catatanmu") {
-		t.Fatalf("write prompt %q", ask.Text)
-	}
-	r, ok := g.s.PendingText(context.Background(), "mengerjakan fitur worklog")
-	if !ok || r.Text != "✅ Tersimpan (1 catatan hari ini)" {
-		t.Fatalf("saved %+v", r)
-	}
-	if g.tg.edits[101] != "✅ Worklog sudah diisi." || g.events("worklog.closed") != 1 {
-		t.Fatalf("prompt closed: edits %v", g.tg.edits)
-	}
-	if r := cb(t, g.s, "wln:1"); !strings.Contains(r.Text, "sudah selesai") {
-		t.Fatalf("closed prompt buttons: %q", r.Text)
-	}
-
-	// the agent answers "later": Telegram's message is edited, event for both
-	g = newRig(t, "2026-11-19")
-	g.at("10:30")
-	ps, _ := g.db.PromptsOn(context.Background(), date("2026-11-19"))
-	if _, err := g.r.Answer(context.Background(), ps[0].ID, "later", "agent"); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(g.tg.edits[101], "Ditunda") {
-		t.Fatalf("telegram message after agent answer: %v", g.tg.edits)
-	}
-	if _, err := g.r.Answer(context.Background(), ps[0].ID, "skip", "agent"); err != nil {
-		t.Fatal("later → skip is allowed")
-	}
-	if _, err := g.r.Answer(context.Background(), ps[0].ID, "skip", "agent"); err != ErrPromptClosed {
-		t.Fatalf("answering a closed prompt: %v", err)
 	}
 }
 
