@@ -24,6 +24,9 @@ type Anim struct {
 	Phase  int     // forms.Mikir: 0 mikir, 1 mikir lama, 2 sangat lama
 	Hop    float64 // success hop progress in (0,1), 0 = none
 	Still  bool    // animations off: static poses
+	Talk   float64 // forms.Bicara: characters typed so far (the mouth follows)
+	Nod    float64 // forms.Bicara: nod at the end of a sentence, 0..1
+	Env    float64 // forms.Bicara: 1 while talking, fading to 0 as the mouth closes
 }
 
 // Palette from PRD 11.1 (premultiplied RGBA).
@@ -73,6 +76,10 @@ func (Procedural) DrawCharacter(c *Canvas, f forms.Form, r Rect, a Anim, s float
 	if f == forms.Mikir && a.Phase >= 1 && !a.Still { // slow side-to-side sway
 		cx += float32(math.Sin(t*2.4) * 3 * s)
 	}
+	talking := (f == forms.Bicara || f == forms.BicaraCari) && !a.Still
+	if talking { // a small nod at the end of a sentence
+		cy += float32(a.Nod * 3 * s)
+	}
 	rx, ry := 44*sc, 38*sc
 
 	spin := float32(1)
@@ -96,7 +103,37 @@ func (Procedural) DrawCharacter(c *Canvas, f forms.Form, r Rect, a Anim, s float
 	if f == forms.Mikir && a.Phase >= 1 {
 		drawSweat(c, cx+rx*0.8, cy-ry*0.45, sc, lw)
 	}
-	drawFace(c, f, a.Phase, cx, cy, sc, lw, t, motion, a.Still)
+	mouth := 0.0 // how open the mouth is while talking, 0..1
+	if talking {
+		mouth = a.Env * math.Abs(math.Sin(a.Talk*math.Pi/2.4))
+	}
+	drawFace(c, f, a.Phase, cx, cy, sc, lw, t, motion, a.Still, mouth)
+	if f == forms.BicaraCari {
+		side := float32(1) // the magnifier goes on the side with room
+		if r.X+r.W/2 > WindowW/2 {
+			side = -1
+		}
+		drawMagnifier(c, cx+side*rx*0.82, cy-ry*0.62, side, sc, lw)
+	}
+}
+
+// drawMagnifier is a small magnifying glass beside the head: a lens with a
+// glint and a short handle pointing away from the body.
+func drawMagnifier(c *Canvas, x, y, side, sc, lw float32) {
+	r := 7.5 * sc
+	var lens Path
+	lens.Ellipse(x, y, r, r)
+	c.Fill(&lens, ColBubble)
+	c.Stroke(&lens, lw*1.2, ColLine)
+	var glint Path
+	glint.MoveTo(x-r*0.55, y-r*0.1)
+	glint.QuadTo(x-r*0.5, y-r*0.5, x-r*0.1, y-r*0.55)
+	c.Stroke(&glint, lw*0.9, ColLeaf)
+	var handle Path
+	hx, hy := x+side*r*0.72, y-r*0.72
+	handle.MoveTo(hx, hy)
+	handle.LineTo(hx+side*8*sc, hy-8*sc)
+	c.Stroke(&handle, lw*2.2, ColLine)
 }
 
 // drawSweat draws a small drop on the side of the body.
@@ -122,6 +159,11 @@ func leafAngle(f forms.Form, phase int, t, motion float64, still bool) float64 {
 		return 0.15 // upright; the propeller spin is the leaf's width (see spin)
 	case forms.Sedih:
 		return 0.5 + 1.0*math.Min(t/0.4, 1) // wilts over 0.4 s
+	case forms.Bicara, forms.BicaraCari:
+		if still {
+			return 0.5
+		}
+		return 0.5 + math.Sin(t*5)*0.10 // a small sway while talking
 	case forms.Fokus, forms.Ingat, forms.Tegur:
 		return 0
 	case forms.Tidur:
@@ -170,7 +212,7 @@ func drawLeaf(c *Canvas, x, y float32, angle float64, spin, sc, lw float32) {
 	c.Stroke(&vein, lw*0.6, ColLine)
 }
 
-func drawFace(c *Canvas, f forms.Form, phase int, cx, cy, sc, lw float32, t, motion float64, still bool) {
+func drawFace(c *Canvas, f forms.Form, phase int, cx, cy, sc, lw float32, t, motion float64, still bool, mouth float64) {
 	ex, ey := 15*sc, -4*sc
 	blink := f == forms.Biasa && (math.Mod(t, 4.2) < 0.14 || (motion > 0.85))
 	crossed := f == forms.Mikir && phase >= 2 && !still && math.Mod(t, 1.2) < 0.6
@@ -256,6 +298,15 @@ func drawFace(c *Canvas, f forms.Form, phase int, cx, cy, sc, lw float32, t, mot
 	case forms.Ingat:
 		m.Ellipse(cx, my+1*sc, 4*sc, 3.2*sc)
 		c.Fill(&m, ColFace)
+	case forms.Bicara, forms.BicaraCari: // opens and closes with the typed letters
+		if mouth < 0.12 {
+			m.MoveTo(cx-5*sc, my)
+			m.LineTo(cx+5*sc, my)
+			c.Stroke(&m, lw*1.3, ColFace)
+		} else {
+			m.Ellipse(cx, my+1*sc, 4.4*sc, float32(1.2+4.6*mouth)*sc)
+			c.Fill(&m, ColFace)
+		}
 	case forms.Tegur:
 		m.MoveTo(cx-6*sc, my+2*sc)
 		m.LineTo(cx+6*sc, my-1*sc)

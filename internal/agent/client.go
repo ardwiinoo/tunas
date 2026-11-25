@@ -136,8 +136,16 @@ func (c *Client) Heartbeat(ctx context.Context, version string, paused bool) (in
 // ConfirmID means Reply is a proposal (reminder/task) that is saved only
 // after Confirm(id, true).
 type ChatReply struct {
-	Reply     string `json:"reply"`
-	ConfirmID string `json:"confirm_id"`
+	Reply     string       `json:"reply"`
+	ConfirmID string       `json:"confirm_id"`
+	Search    bool         `json:"search"`  // a web-search answer
+	Sources   []ChatSource `json:"sources"` // shown after the text
+}
+
+// ChatSource is a web result an answer points to.
+type ChatSource struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
 }
 
 // ChatTurn is one earlier message of the bubble conversation.

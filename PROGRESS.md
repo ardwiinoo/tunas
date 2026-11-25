@@ -262,3 +262,28 @@ Uji langsung (Windows, server lokal):
 - server mati → "menunggu sinkron" + "1 catatan worklog menunggu sinkron" di tray → server hidup → terkirim tepat 1 baris.
 
 Menunggu pemilik **[PEMILIK]**: restart laptop dengan autostart menyala (agen hidup tanpa jendela); menjawab di Telegram menutup bubble; "Jeda pelacakan" menghentikan data masuk.
+
+### Fase 5b (lanjutan 2026-11-25): `/cari` diperbaiki dan gestur "bicara"
+- [x] `/cari` (Tavily) sesuai PRD 6.11:
+  - Permintaan: `search_depth: basic`, `max_results: 5`, `include_answer: "basic"`, `include_usage: true`, `include_raw_content: false`. `/cari dalam <kueri>` memakai `advanced` (2 kredit). Parameter diverifikasi ke docs.tavily.com.
+  - Ke LLM hanya judul + url + 350 karakter pertama untuk maksimal 5 hasil (konteks < 2.500 token); respons mentah tidak pernah diteruskan.
+  - Mode jawaban `llm` (default, dirangkum Bahasa Indonesia dengan sumber bernomor) atau `tavily` (jawaban Tavily + 3 sumber, tanpa LLM); `/settings cari_mode llm|tavily`. LLM gagal atau kosong → otomatis jawaban Tavily.
+  - Sumber 2 sampai 3 ditulis kode (yang dikutip jawaban, dilengkapi hasil teratas); model tidak pernah menulis URL.
+  - Pesan kesalahan spesifik dan tercatat di log (status, durasi, jumlah hasil, kredit; tanpa kunci): 401, 432/433, 429, timeout 8 dtk, kunci kosong, status lain. Total `/cari` ≤ 20 dtk.
+  - Kredit dari `usage.credits`: penghitung harian dan bulanan (`search.credits`), peringatan sekali di 80%, jatah habis → tidak memanggil API lagi; baris kredit di `/status`.
+  - Dari bubble: `/cari <kueri>` (juga `cari <kueri>`), memakai state mikir lalu bicara_cari.
+- [x] Gestur `bicara` / `bicara_cari` (PRD 7):
+  - Setelah loncat kecil, jawaban diketik sepanjang `panjang × speech.ms_per_char` (40 ms), dibatasi `speech.min_seconds` (2) dan `speech.max_seconds` (8). Mulut membuka-menutup mengikuti huruf yang muncul, daun bergoyang kecil, badan mengangguk di akhir kalimat, mulut menutup halus lalu kembali ke form sebelumnya.
+  - Hasil `/cari`: ditambah ikon kaca pembesar di samping kepala; sumber (nama situs) muncul setelah teks selesai.
+  - Berhenti seketika bila bubble ditutup, pemilik menekan Enter / mengetik / `Alt+Space`, atau pengingat jatuh tempo masuk (`ingat` menang). `animations: false` → teks langsung tampil.
+  - Config baru: `speech.ms_per_char`, `speech.min_seconds`, `speech.max_seconds`.
+
+Gerbang (semua lulus, termasuk `-race`):
+- tes klien Tavily palsu: permintaan PRD 6.11, respons 10 hasil × ±12.000 karakter, 401/429/432/433/timeout/5xx, kunci tidak bocor ke pesan error;
+- tes konteks LLM: maks 5 hasil, tiap cuplikan ≤ 350 karakter, total < 2.800 karakter walau respons ribuan karakter;
+- tes mode `tavily` (LLM tidak dipanggil), fallback ke `tavily`, sumber 2 sampai 3, angka dari web tidak dibuang, kredit + peringatan 80% + jatah habis tanpa panggilan API;
+- tes state machine bicara dengan jam palsu: durasi min/maks mengikuti panjang teks, hop → bicara → kembali, berhenti pada Enter/ketik/Backspace/`Alt+Space`/Esc/klik, `ingat` menang, `bicara_cari` + sumber setelah teks, `animations: false`, anggukan di akhir kalimat.
+
+Belum diuji langsung di layar Windows: gestur bicara dan kaca pembesar (hanya tes unit + gambar pose), dan `/cari` dengan kunci Tavily asli (tidak ada kunci di mesin ini). Memori agen belum diukur ulang untuk perubahan ini.
+
+Menunggu pemilik **[PEMILIK]** (DEPLOY.md bagian 19): isi `TAVILY_API_KEY`, recreate kontainer, uji `/cari`, ganti `tunas-agent.exe`.

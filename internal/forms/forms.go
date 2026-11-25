@@ -27,8 +27,10 @@ var All = []Form{Biasa, Fokus, Tidur, Senang, Ingat, Tegur}
 // answer, a failed request). The state machine never outputs them and they
 // cannot be set with /form, so they are not in All and not Valid.
 const (
-	Mikir Form = "mikir"
-	Sedih Form = "sedih"
+	Mikir      Form = "mikir"
+	Sedih      Form = "sedih"
+	Bicara     Form = "bicara"      // talking: shown while an answer is typed out
+	BicaraCari Form = "bicara_cari" // talking with a magnifier: the answer came from a web search
 )
 
 // Valid reports whether f is a known form.

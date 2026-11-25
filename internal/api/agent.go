@@ -286,6 +286,16 @@ func (s *Server) postChat(w http.ResponseWriter, r *http.Request) {
 type ChatResult struct {
 	Reply     string `json:"reply"`
 	ConfirmID string `json:"confirm_id,omitempty"`
+	// Search marks a web-search answer (the bubble uses the bicara_cari
+	// gesture); Sources are shown after the text has been typed out.
+	Search  bool         `json:"search,omitempty"`
+	Sources []ChatSource `json:"sources,omitempty"`
+}
+
+// ChatSource is a web result an answer points to.
+type ChatSource struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
 }
 
 func (s *Server) postConfirm(w http.ResponseWriter, r *http.Request) {

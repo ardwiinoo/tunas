@@ -43,6 +43,8 @@ func newHarness(t *testing.T) *harness {
 				return ChatResult{}, fmt.Errorf("x: %w", llm.ErrTimeout)
 			case "ingatkan":
 				return ChatResult{Reply: "Buat pengingat?", ConfirmID: "abc123"}, nil
+			case "cari":
+				return ChatResult{Reply: "Jawaban [1].", Search: true, Sources: []ChatSource{{Title: "Judul", URL: "https://kompas.com/a"}}}, nil
 			}
 			return ChatResult{Reply: "[" + form + "] " + text}, nil
 		},
@@ -207,6 +209,11 @@ func TestChat(t *testing.T) {
 	}
 	if code, _ := h.do("POST", "/v1/agent/chat", "", map[string]string{"text": "x"}); code != 401 {
 		t.Error("chat without token")
+	}
+	code, out = h.do("POST", "/v1/agent/chat", h.token, map[string]string{"text": "cari"})
+	srcs, _ := out["sources"].([]any)
+	if code != 200 || out["search"] != true || len(srcs) != 1 || srcs[0].(map[string]any)["url"] != "https://kompas.com/a" {
+		t.Fatalf("search answer = %d %v", code, out)
 	}
 	code, out = h.do("POST", "/v1/agent/chat", h.token, map[string]string{"text": "ingatkan"})
 	if code != 200 || out["confirm_id"] != "abc123" {

@@ -2,6 +2,8 @@ package overlay
 
 import (
 	"context"
+	"net/url"
+	"strings"
 
 	"github.com/ardwiinoo/tunas/internal/agent"
 )
@@ -27,4 +29,31 @@ type TrayOptions struct {
 	ConfigDir string         // "Buka folder konfigurasi"
 	// OfferAutostart shows the first-run question once (not with --background).
 	OfferAutostart bool
+}
+
+// SourceNames turns search results into the short site names shown under
+// an answer ("kompas.com"), without duplicates, at most three.
+func SourceNames(src []agent.ChatSource) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, s := range src {
+		h := siteName(s.URL)
+		if h == "" || seen[h] {
+			continue
+		}
+		seen[h] = true
+		out = append(out, h)
+		if len(out) == 3 {
+			break
+		}
+	}
+	return out
+}
+
+func siteName(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	return strings.TrimPrefix(u.Hostname(), "www.")
 }

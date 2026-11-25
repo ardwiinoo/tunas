@@ -1,6 +1,8 @@
 package overlay
 
 import (
+	"fmt"
+	"math"
 	"math/rand/v2"
 	"strings"
 	"time"
@@ -45,9 +47,11 @@ const (
 )
 
 type bubble struct {
-	text string
-	kind kind
-	d    time.Duration
+	text    string
+	kind    kind
+	d       time.Duration
+	search  bool     // the answer came from a web search (bicara_cari)
+	sources []string // site names shown after the text ("kompas.com")
 }
 
 // LoadingLines are the playful texts shown while waiting, one list per
@@ -93,6 +97,12 @@ type Presenter struct {
 	Pick          func(n int) int
 	IdleClose     time.Duration // close the open bubble after this long without activity (default 60 s)
 
+	// The "bicara" gesture (config.yaml speech.*): an answer is typed out
+	// over len × SpeechMsPerChar, kept between SpeechMin and SpeechMax.
+	SpeechMsPerChar time.Duration // default 40 ms
+	SpeechMin       time.Duration // default 2 s
+	SpeechMax       time.Duration // default 8 s
+
 	cur       bubble // Showing, Reply
 	failMsg   string // Failed
 	sent      string // last submitted text, restored on failure
@@ -107,6 +117,8 @@ type Presenter struct {
 	failedAt  time.Time // Failed: when it failed (sad pose)
 	queue     []bubble
 	scrollUp  int // lines scrolled up from the bottom of a long bubble
+
+	stopped bool // the owner ended the gesture (Enter, typing, a reminder); it does not come back
 
 	history  []Turn    // the conversation so far (last MaxContext turns)
 	asked    []Turn    // history sent with the pending request
@@ -130,7 +142,11 @@ const (
 	ThinkLimit           = 40 * time.Second // give up waiting (the chat call itself times out sooner)
 	HopFor               = 400 * time.Millisecond
 	SadFor               = 1500 * time.Millisecond
-	TypeRate             = 30 // runes per second
+	NodFor               = 250 * time.Millisecond // a small nod at the end of a sentence
+	DefaultMsPerChar     = 40 * time.Millisecond
+	DefaultSpeechMin     = 2 * time.Second
+	DefaultSpeechMax     = 8 * time.Second
+	speechClose          = 300 * time.Millisecond // the mouth closes smoothly at the end
 	dotStep              = 400 * time.Millisecond
 	MaxDraftLen          = 300
 	MaxQueue             = 4
@@ -327,9 +343,19 @@ func (p *Presenter) OnForm(out forms.Output, now time.Time) {
 	p.offer(b, now)
 }
 
-// OnReply delivers a chat reply: a small hop, then the answer is typed out.
+// OnReply delivers a chat reply: a small hop, then the answer is typed out
+// while Tunas talks (bicara).
 func (p *Presenter) OnReply(text string, now time.Time) {
-	b := bubble{text: text, kind: kindReply, d: replyFor(text)}
+	p.deliver(bubble{text: text, kind: kindReply, d: replyFor(text)}, now)
+}
+
+// OnSearchReply delivers a web-search answer: the same, with the magnifier
+// (bicara_cari), and the sources (site names) after the text is typed out.
+func (p *Presenter) OnSearchReply(text string, sources []string, now time.Time) {
+	p.deliver(bubble{text: text, kind: kindReply, d: replyFor(text), search: true, sources: sources}, now)
+}
+
+func (p *Presenter) deliver(b bubble, now time.Time) {
 	if p.Waiting() {
 		p.showReply(b, now)
 		return
@@ -344,7 +370,7 @@ func replyFor(text string) time.Duration {
 
 func (p *Presenter) showReply(b bubble, now time.Time) {
 	p.State, p.cur, p.shownAt, p.typed, p.revealAll = Reply, b, now, true, p.NoAnimations
-	p.Draft, p.scrollUp = "", 0
+	p.Draft, p.scrollUp, p.stopped = "", 0, false
 	// the text box opens under the answer; idle time counts from when the
 	// answer has been typed out
 	p.typedAt = now.Add(p.revealDur(b.text))
@@ -352,16 +378,33 @@ func (p *Presenter) showReply(b bubble, now time.Time) {
 	p.remember(Turn{Role: "assistant", Text: b.text})
 }
 
+// SpeechFor is how long an answer of n characters takes to type out, and
+// how long Tunas talks: n × ms per character, between the minimum and the
+// maximum (a long answer is typed faster, never slower than the maximum).
+func (p *Presenter) SpeechFor(n int) time.Duration {
+	ms, lo, hi := p.SpeechMsPerChar, p.SpeechMin, p.SpeechMax
+	if ms <= 0 {
+		ms = DefaultMsPerChar
+	}
+	if lo <= 0 {
+		lo = DefaultSpeechMin
+	}
+	if hi < lo {
+		hi = max(DefaultSpeechMax, lo)
+	}
+	return min(max(time.Duration(n)*ms, lo), hi)
+}
+
 // revealDur is how long the hop and the typing effect take.
 func (p *Presenter) revealDur(text string) time.Duration {
 	if p.revealAll {
 		return 0
 	}
-	return HopFor + time.Duration(utf8.RuneCountInString(text))*time.Second/TypeRate
+	return HopFor + p.SpeechFor(utf8.RuneCountInString(text))
 }
 
 // Revealed is how many runes of the bubble text are visible: -1 for all,
-// 0 during the hop (no bubble yet), then growing at TypeRate.
+// 0 during the hop (no bubble yet), then growing evenly over SpeechFor.
 func (p *Presenter) Revealed(now time.Time) int {
 	if p.State != Reply || !p.typed || p.revealAll {
 		return -1
@@ -370,11 +413,70 @@ func (p *Presenter) Revealed(now time.Time) int {
 	if t < 0 {
 		return 0
 	}
-	n := int(t * TypeRate / time.Second)
-	if n >= utf8.RuneCountInString(p.cur.text) {
+	total := utf8.RuneCountInString(p.cur.text)
+	n := int(float64(total) * float64(t) / float64(p.SpeechFor(total)))
+	if n >= total {
 		return -1
 	}
 	return n
+}
+
+// Speaking reports whether Tunas is talking: after the hop, while the answer
+// is typed out (plus a short closing nod). It ends at once when the bubble
+// closes, the owner presses Enter or types, or a reminder takes over.
+func (p *Presenter) Speaking(now time.Time) bool {
+	if p.State != Reply || !p.typed || p.stopped || p.NoAnimations {
+		return false
+	}
+	start := p.shownAt.Add(HopFor)
+	total := utf8.RuneCountInString(p.cur.text)
+	return !now.Before(start) && now.Before(start.Add(p.SpeechFor(total)+NodFor))
+}
+
+// stopSpeaking ends the gesture for good (the text is shown in full).
+func (p *Presenter) stopSpeaking() {
+	if p.State == Reply && p.typed {
+		p.stopped = true
+	}
+}
+
+// sentenceEnd reports whether rune i of rs ends a sentence.
+func sentenceEnd(rs []rune, i int) bool {
+	switch rs[i] {
+	case '.', '!', '?':
+		return i+1 >= len(rs) || rs[i+1] == ' ' || rs[i+1] == '\n'
+	}
+	return false
+}
+
+// nodAt is the body's nod in [0,1] at progress r (runes typed so far) of a
+// text typed over d: a short dip after each sentence end, and a last one
+// when the text is complete.
+func nodAt(text []rune, r int, d time.Duration, sinceEnd time.Duration) float64 {
+	if len(text) == 0 {
+		return 0
+	}
+	per := d / time.Duration(len(text))
+	last := -1
+	for i := min(r, len(text)) - 1; i >= 0; i-- {
+		if sentenceEnd(text, i) {
+			last = i
+			break
+		}
+	}
+	var since time.Duration
+	switch {
+	case r >= len(text) && sentenceEnd(text, len(text)-1):
+		since = sinceEnd
+	case last >= 0:
+		since = time.Duration(r-1-last) * per
+	default:
+		return 0
+	}
+	if since < 0 || since >= NodFor {
+		return 0
+	}
+	return math.Sin(math.Pi * float64(since) / float64(NodFor))
 }
 
 // SkipReveal shows the whole answer at once (Enter while it is typed).
@@ -382,6 +484,7 @@ func (p *Presenter) SkipReveal(now time.Time) {
 	if p.State != Reply || p.revealAll {
 		return
 	}
+	p.stopSpeaking()
 	p.revealAll = true
 	if p.typed {
 		p.typedAt = now
@@ -450,6 +553,12 @@ func (p *Presenter) CancelWait(now time.Time) bool {
 
 // offer routes a new notification or late reply.
 func (p *Presenter) offer(b bubble, now time.Time) {
+	if b.kind == kindReminder && p.State == Reply && p.typed && !p.revealAll {
+		// ingat beats bicara: Tunas stops talking and the answer is shown in
+		// full; the reminder waits in the queue and comes next
+		p.stopSpeaking()
+		p.revealAll, p.typedAt = true, now
+	}
 	switch p.State {
 	case Idle:
 		p.show(b, now)
@@ -494,6 +603,7 @@ func (p *Presenter) OnHotkey(now time.Time) {
 		return
 	case p.Typing():
 		if p.State == Reply {
+			p.stopSpeaking()
 			p.revealAll = true // the reply is being typed out: show it, then type
 		}
 		p.typedAt = now
@@ -520,6 +630,7 @@ func (p *Presenter) Type(rs []rune, now time.Time) {
 	if !p.Typing() {
 		return
 	}
+	p.stopSpeaking()
 	p.revealAll = true // typing under a reply shows the whole reply
 	p.typedAt, p.scrollUp = now, 0
 	for _, r := range rs {
@@ -538,6 +649,7 @@ func (p *Presenter) Backspace(now time.Time) {
 	if !p.Typing() {
 		return
 	}
+	p.stopSpeaking()
 	p.revealAll = true
 	p.typedAt, p.scrollUp = now, 0
 	if p.Draft != "" {
@@ -645,7 +757,8 @@ func (p *Presenter) BubbleText() string {
 		return p.phaseLine + "\n" + CancelHint
 	case Reply:
 		if p.typed && p.revealAll {
-			return p.cur.text + "\n› " + p.Draft + Cursor
+			// the sources appear once the text is complete
+			return p.cur.text + p.sourcesLine() + "\n› " + p.Draft + Cursor
 		}
 		return p.cur.text
 	case Showing:
@@ -658,12 +771,28 @@ func (p *Presenter) BubbleText() string {
 	return ""
 }
 
+// sourcesLine is "\n\nSumber: [1] kompas.com [2] detik.com" ("" without sources).
+func (p *Presenter) sourcesLine() string {
+	if len(p.cur.sources) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\nSumber:")
+	for i, s := range p.cur.sources {
+		fmt.Fprintf(&b, " [%d] %s", i+1, s)
+	}
+	return b.String()
+}
+
 // Look is what the renderer shows for the character right now.
 type Look struct {
 	Form  forms.Form // a display form (Mikir, Sedih, Senang for the hop) or the agent's form
 	Phase int        // Mikir: 0 mikir, 1 mikir lama, 2 sangat lama
 	T     float64    // seconds in this look (drives its animation)
 	Hop   float64    // success hop progress in (0,1), 0 = none
+	Talk  float64    // Bicara: characters typed so far (fractional): the mouth follows it
+	Nod   float64    // Bicara: the body's nod at the end of a sentence, 0..1
+	Env   float64    // Bicara: 1 while talking, fading to 0 as the mouth closes
 }
 
 // Look returns the character's pose for now.
@@ -684,8 +813,34 @@ func (p *Presenter) Look(now time.Time) Look {
 		if d := now.Sub(p.shownAt); p.typed && !p.NoAnimations && d < HopFor {
 			return Look{Form: forms.Senang, T: 10, Hop: float64(d) / float64(HopFor)}
 		}
+		if p.Speaking(now) {
+			return p.speakLook(now)
+		}
 	}
 	return Look{Form: p.Form}
+}
+
+// speakLook is the bicara pose: the mouth opens and closes with the typed
+// characters, the body nods at sentence ends, and the mouth closes smoothly
+// at the end (the "halus" return to the previous form).
+func (p *Presenter) speakLook(now time.Time) Look {
+	text := []rune(p.cur.text)
+	total := len(text)
+	d := p.SpeechFor(total)
+	start := p.shownAt.Add(HopFor)
+	t := now.Sub(start)
+	talk := min(float64(total)*float64(t)/float64(d), float64(total))
+	end := start.Add(d)
+	env := 1.0
+	if left := end.Add(NodFor).Sub(now); left < speechClose {
+		env = max(float64(left)/float64(speechClose), 0)
+	}
+	form := forms.Bicara
+	if p.cur.search {
+		form = forms.BicaraCari
+	}
+	return Look{Form: form, T: t.Seconds(), Talk: talk, Env: env,
+		Nod: nodAt(text, int(talk), d, now.Sub(end))}
 }
 
 // WithDots returns lines with the trailing dots of the last line set to n

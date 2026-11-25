@@ -85,6 +85,13 @@ forms:
 	if c.CategoryOf("code.EXE") != "work" || c.CategoryOf("chrome.exe") != "other" {
 		t.Fatal("user categories should replace defaults")
 	}
+	if sp := c.Speech; sp.MsPerChar != 40 || sp.MinSeconds != 2 || sp.MaxSeconds != 8 {
+		t.Fatalf("speech defaults: %+v", sp)
+	}
+	if c2, err := ParseAgent([]byte("speech: {ms_per_char: 25, min_seconds: 1.5, max_seconds: 6}")); err != nil ||
+		c2.Speech.MsPerChar != 25 || c2.Speech.MinSeconds != 1.5 || c2.Speech.MaxSeconds != 6 {
+		t.Fatalf("speech from yaml: %+v %v", c2.Speech, err)
+	}
 	if c.Loading.SlowAfterSeconds != 3 || c.Loading.VerySlowAfterSeconds != 8 || !c.Animations {
 		t.Fatalf("loading/animations defaults: %+v %v", c.Loading, c.Animations)
 	}
@@ -103,6 +110,9 @@ func TestParseAgentRejects(t *testing.T) {
 		"loading":  "loading: {slow_after_seconds: 8, very_slow_after_seconds: 3}",
 		"loading0": "loading: {slow_after_seconds: 0}",
 		"bubble":   "bubble: {idle_close_seconds: 5}",
+		"speech1":  "speech: {ms_per_char: 1}",
+		"speech2":  "speech: {min_seconds: 9, max_seconds: 3}",
+		"speech3":  "speech: {max_seconds: 99}",
 	}
 	for name, y := range cases {
 		if _, err := ParseAgent([]byte(y)); err == nil {

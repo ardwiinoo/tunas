@@ -236,6 +236,11 @@ func (o *Overlay) Configure(slowAfter, verySlowAfter time.Duration, animations b
 	}
 }
 
+// ConfigureSpeech sets the bicara gesture (config.yaml speech.*; call before Run).
+func (o *Overlay) ConfigureSpeech(msPerChar, minSpeech, maxSpeech time.Duration) {
+	o.p.SpeechMsPerChar, o.p.SpeechMin, o.p.SpeechMax = msPerChar, minSpeech, maxSpeech
+}
+
 // SetIdleClose sets how long an open bubble waits for activity (call before Run).
 func (o *Overlay) SetIdleClose(d time.Duration) { o.p.IdleClose = d }
 
@@ -254,6 +259,8 @@ type chatResult struct {
 	req       int // presenter request id; results for an older id are dropped
 	reply     string
 	confirmID string         // a proposal waiting for Enter/Esc
+	search    bool           // a web-search answer
+	sources   []string       // site names shown after the text
 	fail      agent.ChatFail // "" on success
 }
 
@@ -478,7 +485,7 @@ func (o *Overlay) ask(ctx context.Context, cancel context.CancelFunc, req int, t
 	defer cancel()
 	start := time.Now()
 	reply, err := o.chat.Chat(ctx, text, string(f), history)
-	res := chatResult{req: req, reply: reply.Reply, confirmID: reply.ConfirmID}
+	res := chatResult{req: req, reply: reply.Reply, confirmID: reply.ConfirmID, search: reply.Search, sources: SourceNames(reply.Sources)}
 	if errors.Is(err, context.Canceled) && o.ctx.Err() == nil {
 		return // Esc: already handled on the UI thread
 	}
@@ -555,6 +562,8 @@ func (o *Overlay) tick(now time.Time) {
 				o.p.OnChatFailed(FailText(r.fail), now)
 			case r.confirmID != "":
 				o.p.OnProposal(r.reply, r.confirmID, now)
+			case r.search:
+				o.p.OnSearchReply(r.reply, r.sources, now)
 			default:
 				o.p.OnReply(r.reply, now)
 			}
@@ -670,7 +679,8 @@ func (o *Overlay) render(now time.Time) {
 		sc.Bubble.W = 0 // hop first, then the answer is typed out
 	}
 	look := o.p.Look(now)
-	a := Anim{T: look.T, Motion: motion, Phase: look.Phase, Hop: look.Hop, Still: o.p.NoAnimations}
+	a := Anim{T: look.T, Motion: motion, Phase: look.Phase, Hop: look.Hop, Still: o.p.NoAnimations,
+		Talk: look.Talk, Nod: look.Nod, Env: look.Env}
 	if look.Form == o.p.Form {
 		a.T = now.Sub(o.formStart).Seconds()
 	}

@@ -164,6 +164,8 @@ func run(cfgPath string, debug, background bool) error {
 	ov.Configure(time.Duration(cfg.Loading.SlowAfterSeconds)*time.Second,
 		time.Duration(cfg.Loading.VerySlowAfterSeconds)*time.Second, cfg.Animations, loadingLines(log))
 	ov.SetIdleClose(time.Duration(cfg.Bubble.IdleCloseSeconds) * time.Second)
+	ov.ConfigureSpeech(time.Duration(cfg.Speech.MsPerChar)*time.Millisecond,
+		time.Duration(cfg.Speech.MinSeconds*float64(time.Second)), time.Duration(cfg.Speech.MaxSeconds*float64(time.Second)))
 	ov.OnPause = a.SetPaused
 	exe, _ := os.Executable()
 	ov.SetTray(overlay.TrayOptions{
