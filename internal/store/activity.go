@@ -38,12 +38,16 @@ func (db *DB) UpsertBuckets(ctx context.Context, deviceID int64, bs []Bucket) er
 	})
 }
 
-// BucketsBetween returns buckets in [from, to) for all devices, ordered by time.
+// BucketsBetween returns buckets in [from, to) for all devices, ordered by
+// time. The category is the current server mapping (app_categories), so a
+// change from Telegram applies to past days; an app without a mapping keeps
+// the category the agent stored.
 func (db *DB) BucketsBetween(ctx context.Context, from, to time.Time) ([]Bucket, error) {
 	rows, err := db.Pool.Query(ctx,
-		`select device_id, bucket_start, app, category, active_seconds, idle_seconds
-		 from activity_buckets where bucket_start >= $1 and bucket_start < $2
-		 order by bucket_start, app`, from, to)
+		`select b.device_id, b.bucket_start, b.app, coalesce(ac.category, b.category), b.active_seconds, b.idle_seconds
+		 from activity_buckets b left join app_categories ac on ac.app = lower(b.app)
+		 where b.bucket_start >= $1 and b.bucket_start < $2
+		 order by b.bucket_start, b.app`, from, to)
 	if err != nil {
 		return nil, err
 	}

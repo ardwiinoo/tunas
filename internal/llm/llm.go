@@ -306,7 +306,9 @@ func (c *Client) call(ctx context.Context, model string, msgs []Message, maxToke
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 8192))
-		c.Log.Warn("llm call failed", "model", model, "status", resp.StatusCode, "ms", time.Since(start).Milliseconds())
+		if ctx.Err() == nil { // a caller that already gave up is not a gateway failure to warn about
+			c.Log.Warn("llm call failed", "model", model, "status", resp.StatusCode, "ms", time.Since(start).Milliseconds())
+		}
 		return "", "", &StatusError{Code: resp.StatusCode}
 	}
 	var out chatResponse

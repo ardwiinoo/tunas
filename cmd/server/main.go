@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/ardwiinoo/tunas/internal/api"
+	"github.com/ardwiinoo/tunas/internal/apps"
 	"github.com/ardwiinoo/tunas/internal/assist"
 	"github.com/ardwiinoo/tunas/internal/bot"
 	"github.com/ardwiinoo/tunas/internal/config"
@@ -138,6 +139,12 @@ func serve() error {
 		}
 	}
 	monitor.Res = statusSvc
+	appsSvc := &apps.Service{DB: db, Now: time.Now, Loc: cfg.Location, Log: log}
+	if n, err := appsSvc.Seed(ctx, config.DefaultAppSeed()); err != nil {
+		return err
+	} else if n > 0 {
+		log.Info("app categories seeded", "new", n)
+	}
 	log.Info("status", "host_stats", cfg.HostStatsFile != "", "version", version)
 
 	cmds := &bot.Commands{DB: db, Loc: cfg.Location, Now: time.Now, Log: log}
@@ -205,6 +212,13 @@ func serve() error {
 		if cmd == "status" {
 			return statusReply(ctx, statusSvc, args, log), true
 		}
+		if card, ok, err := appsSvc.Command(ctx, cmd, args); ok {
+			if err != nil {
+				log.Error("apps command failed", "cmd", cmd, "err", err)
+				return bot.Reply{Text: "Maaf, ada gangguan di server. Coba lagi sebentar."}, true
+			}
+			return appsReply(card), true
+		}
 		return wl.Command(ctx, cmd, args)
 	}
 	tgBot.OnText = func(ctx context.Context, text string) bot.Reply {
@@ -214,6 +228,15 @@ func serve() error {
 		return asst.HandleText(ctx, text)
 	}
 	tgBot.OnCallback = func(ctx context.Context, data string) bot.Reply {
+		if card, ok, err := appsSvc.Callback(ctx, data); ok {
+			if err != nil {
+				log.Error("apps callback failed", "err", err)
+				return bot.Reply{Toast: "Gagal menyimpan kategori.", Keep: true}
+			}
+			r := appsReply(card)
+			r.Keep = r.Text == ""
+			return r
+		}
 		if c, ok, err := statusSvc.Callback(ctx, data); ok {
 			if err != nil {
 				log.Error("status callback failed", "err", err)
@@ -270,6 +293,10 @@ func serve() error {
 		}
 	})
 	wg.Go(func() { sched.Run(ctx) })
+	appsSvc.Send = func(ctx context.Context, c apps.Card) error {
+		return tgBot.SendReply(ctx, cfg.TelegramOwnerID, appsReply(c))
+	}
+	wg.Go(func() { appsSvc.Run(ctx) })
 	wg.Go(func() { _ = tgBot.Run(ctx) })
 	wg.Go(func() { asst.RunDaily(ctx, tgBot) })
 	wg.Go(func() { monitor.Run(ctx, time.Minute) }) // offline notice ~15 min after the last contact
@@ -554,4 +581,17 @@ func statusReply(ctx context.Context, svc *status.Service, args string, log *slo
 		return bot.Reply{Text: "Maaf, status belum bisa diambil. Coba lagi sebentar."}
 	}
 	return cardReply(c)
+}
+
+// appsReply turns an apps card into a Telegram reply.
+func appsReply(c apps.Card) bot.Reply {
+	r := bot.Reply{Text: c.Text, Toast: c.Toast}
+	for _, row := range c.Rows {
+		var out []bot.Button
+		for _, b := range row {
+			out = append(out, bot.Button{Text: b.Text, Data: b.Data})
+		}
+		r.Rows = append(r.Rows, out)
+	}
+	return r
 }

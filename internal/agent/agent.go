@@ -45,6 +45,8 @@ type Agent struct {
 	OverlayState func() string
 	// StatsFile, when set, receives every sample (for `tunas-agent.exe --status`).
 	StatsFile string
+	// CategoriesFile keeps the last app → category mapping from the server.
+	CategoriesFile string
 	// OnConn is called when the connection state changes (tray icon).
 	OnConn func(ConnState)
 	// Version is reported in the heartbeat.
@@ -72,6 +74,7 @@ type Agent struct {
 
 	worklogKick chan struct{}
 	stats       statsState
+	cats        categoryState
 	lastIdle    time.Duration // idle time at the last sample
 	lastSync    time.Time     // last successful upload (tray status)
 }
@@ -125,6 +128,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	wg.Go(func() { a.heartbeatLoop(ctx) })
 	wg.Go(func() { a.worklogLoop(ctx) })
 	wg.Go(func() { a.statsLoop(ctx) })
+	wg.Go(func() { a.categoriesLoop(ctx) })
 	a.queueChanged(ctx)
 
 	interval := time.Duration(a.Cfg.SampleIntervalSeconds) * time.Second
@@ -165,7 +169,7 @@ func (a *Agent) SampleOnce(ctx context.Context, interval time.Duration) error {
 	a.lastIdle = s.Idle
 	a.mu.Unlock()
 	if s.App != "" && !a.Paused() {
-		cat = a.Cfg.CategoryOf(s.App)
+		cat = a.categoryOf(s.App)
 		secs := int(interval.Seconds())
 		act, idl := secs, 0
 		if idle {

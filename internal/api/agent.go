@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ardwiinoo/tunas/internal/agentstats"
+	"github.com/ardwiinoo/tunas/internal/apps"
 	"github.com/ardwiinoo/tunas/internal/llm"
 	"github.com/ardwiinoo/tunas/internal/store"
 )
@@ -42,6 +43,7 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /v1/agent/events/ack", s.auth(s.ackEvents))
 	mux.Handle("GET /v1/agent/state", s.auth(s.getState))
 	mux.Handle("POST /v1/agent/heartbeat", s.auth(s.postHeartbeat))
+	mux.Handle("POST /v1/agent/categories/seed", s.auth(s.postSeedCategories))
 	if s.summary != nil {
 		mux.Handle("GET /v1/agent/status/summary", s.auth(s.getStatusSummary))
 	}
@@ -203,7 +205,52 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 	if ok && v != "" {
 		override = &v
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"form_override": override, "now": s.now()})
+	cats, err := s.db.AppCategories(r.Context())
+	if err != nil {
+		s.log.Error("get categories failed", "err", err)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	etag := store.CategoriesETag(cats)
+	out := map[string]any{"form_override": override, "now": s.now(), "categories_etag": etag}
+	if r.URL.Query().Get("categories_etag") != etag { // the agent already has this mapping otherwise
+		out["app_categories"] = cats
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// maxSeedApps bounds one seed request.
+const maxSeedApps = 500
+
+// postSeedCategories adds apps from the agent's config.yaml that the server
+// has no category for yet. It never changes an existing choice.
+func (s *Server) postSeedCategories(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Apps map[string]string `json:"apps"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if len(req.Apps) > maxSeedApps {
+		writeError(w, http.StatusBadRequest, "too many apps")
+		return
+	}
+	clean := make(map[string]string, len(req.Apps))
+	for app, cat := range req.Apps {
+		name, ok := apps.NormalizeApp(app)
+		if !ok || !validCategories[cat] || strings.Contains(app, "/") || strings.Contains(app, "\\") {
+			writeError(w, http.StatusBadRequest, "invalid app or category")
+			return
+		}
+		clean[name] = cat
+	}
+	n, err := s.db.SeedAppCategories(r.Context(), clean, s.now())
+	if err != nil {
+		s.log.Error("seed categories failed", "err", err)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"added": n})
 }
 
 // postHeartbeat records the agent's version and tracking state (last_seen

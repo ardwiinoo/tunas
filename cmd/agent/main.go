@@ -151,14 +151,15 @@ func run(cfgPath string, debug, background bool) error {
 	uiState := agent.LoadUIState(statePath)
 	client := agent.NewClient(cfg.ServerURL, cfg.DeviceToken)
 	a := &agent.Agent{
-		Cfg:       cfg,
-		Sampler:   agent.NewSampler(),
-		Buf:       buf,
-		API:       client,
-		Log:       log,
-		Version:   version,
-		Proc:      agent.NewProcReader(),
-		StatsFile: statsPath(),
+		Cfg:            cfg,
+		Sampler:        agent.NewSampler(),
+		Buf:            buf,
+		API:            client,
+		Log:            log,
+		Version:        version,
+		Proc:           agent.NewProcReader(),
+		StatsFile:      statsPath(),
+		CategoriesFile: filepath.Join(dataDir(), "categories.json"),
 	}
 	a.SetPaused(uiState.TrackingPaused)
 
