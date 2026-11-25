@@ -278,3 +278,48 @@ func TestExtractJSON(t *testing.T) {
 		t.Fatal("expected no json")
 	}
 }
+
+// Every model try is reported to OnAttempt (the per-model usage of /status).
+func TestOnAttemptReportsEachTry(t *testing.T) {
+	g := &gateway{respond: func(_ int, req chatRequest) (int, string) {
+		switch req.Model {
+		case "p/primary":
+			return 429, `{}`
+		case "f/one":
+			return 403, `{}`
+		}
+		return 200, ok("jawaban", "stop")
+	}}
+	c := newClient(t, g)
+	type try struct {
+		model, kind string
+		ok          bool
+	}
+	var got []try
+	c.OnAttempt = func(model string, ok bool, kind string, _ time.Duration) { got = append(got, try{model, kind, ok}) }
+	if _, err := c.Complete(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	want := []try{{"p/primary", KindQuota, false}, {"f/one", KindBlocked, false}, {"f/two", "", true}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("attempts = %v, want %v", got, want)
+	}
+}
+
+// A caller that gives up (Esc) is not a model failure.
+func TestOnAttemptIgnoresCancellation(t *testing.T) {
+	g := &gateway{respond: func(int, chatRequest) (int, string) {
+		time.Sleep(300 * time.Millisecond)
+		return 200, ok("x", "stop")
+	}}
+	c := newClient(t, g)
+	n := 0
+	c.OnAttempt = func(string, bool, string, time.Duration) { n++ }
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	go func() { time.Sleep(20 * time.Millisecond); cancel() }()
+	_, _ = c.Complete(ctx, nil)
+	if n != 0 {
+		t.Fatalf("%d attempts counted for a cancelled request", n)
+	}
+}

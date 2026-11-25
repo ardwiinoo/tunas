@@ -36,18 +36,20 @@ type Monitor struct {
 	Log    *slog.Logger
 
 	Loc *time.Location // for times in messages
+	Res Resources      // resource alerts and samples (nil = off)
 
 	mu         sync.Mutex
 	lastAlert  map[string]time.Time
 	devDown    map[int64]bool // offline notice sent for the device's current outage
 	llmFails   int
 	lastPruned time.Time
+	agentOver  map[string]time.Time // device → since when its memory is above 2x target
 }
 
 // NewMonitor creates a monitor.
 func NewMonitor(db *store.DB, n Notifier, now func() time.Time, loc *time.Location, log *slog.Logger) *Monitor {
 	return &Monitor{DB: db, Notify: n, Now: now, Loc: loc, Log: log,
-		lastAlert: map[string]time.Time{}, devDown: map[int64]bool{}}
+		lastAlert: map[string]time.Time{}, devDown: map[int64]bool{}, agentOver: map[string]time.Time{}}
 }
 
 // alert sends text unless an alert of the same kind went out within the cooldown.
@@ -137,8 +139,12 @@ func (m *Monitor) Cleanup(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	st, err := m.DB.PruneStats(ctx, now.Add(-store.StatsRetention))
+	if err != nil {
+		return err
+	}
 	m.lastPruned = now
-	m.Log.Info("cleanup done", "activity_rows", a, "event_rows", e)
+	m.Log.Info("cleanup done", "activity_rows", a, "event_rows", e, "stats_rows", st)
 	return nil
 }
 
@@ -149,6 +155,9 @@ func (m *Monitor) Run(ctx context.Context, interval time.Duration) {
 	for {
 		if err := m.CheckAgent(ctx); err != nil {
 			m.Log.Warn("agent check failed", "err", err)
+		}
+		if err := m.CheckResources(ctx); err != nil {
+			m.Log.Warn("resource check failed", "err", err)
 		}
 		if err := m.Cleanup(ctx); err != nil {
 			m.Log.Warn("cleanup failed", "err", err)

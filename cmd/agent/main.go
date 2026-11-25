@@ -29,7 +29,17 @@ func main() {
 	debug := flag.Bool("debug", false, "open a console window and log to it at debug level")
 	cfgPath := flag.String("config", defaultConfigPath(), "path to config.yaml")
 	background := flag.Bool("background", false, "started by Windows (autostart): no first-run questions")
+	showStatus := flag.Bool("status", false, "print the running agent's own statistics as JSON (no token, no network) and exit")
 	flag.Parse()
+	if *showStatus {
+		out, err := agent.ReadStatsFile(statsPath(), time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(out))
+		return
+	}
 
 	// The release build is a GUI-subsystem exe (no console), so --debug has
 	// to create one or its output would go nowhere.
@@ -86,6 +96,9 @@ func loadingLines(log *slog.Logger) overlay.LoadingLines {
 	return overlay.LoadingLines{Mikir: l["mikir"], MikirLama: l["mikir_lama"], SangatLama: l["sangat_lama"]}
 }
 
+// statsPath is where the running agent leaves its latest statistics.
+func statsPath() string { return filepath.Join(dataDir(), "stats.json") }
+
 func dataDir() string { return appDir("LOCALAPPDATA", os.UserCacheDir) }
 
 func run(cfgPath string, debug, background bool) error {
@@ -138,12 +151,14 @@ func run(cfgPath string, debug, background bool) error {
 	uiState := agent.LoadUIState(statePath)
 	client := agent.NewClient(cfg.ServerURL, cfg.DeviceToken)
 	a := &agent.Agent{
-		Cfg:     cfg,
-		Sampler: agent.NewSampler(),
-		Buf:     buf,
-		API:     client,
-		Log:     log,
-		Version: version,
+		Cfg:       cfg,
+		Sampler:   agent.NewSampler(),
+		Buf:       buf,
+		API:       client,
+		Log:       log,
+		Version:   version,
+		Proc:      agent.NewProcReader(),
+		StatsFile: statsPath(),
 	}
 	a.SetPaused(uiState.TrackingPaused)
 
@@ -161,6 +176,7 @@ func run(cfgPath string, debug, background bool) error {
 	}
 
 	ov.CharacterOff = !cfg.Overlay.Enabled
+	a.OverlayState = ov.State
 	ov.Configure(time.Duration(cfg.Loading.SlowAfterSeconds)*time.Second,
 		time.Duration(cfg.Loading.VerySlowAfterSeconds)*time.Second, cfg.Animations, loadingLines(log))
 	ov.SetIdleClose(time.Duration(cfg.Bubble.IdleCloseSeconds) * time.Second)
@@ -214,6 +230,8 @@ func (h *host) AnswerPrompt(ctx context.Context, id int64, action string) error 
 }
 
 func (h *host) MuteWorklog(ctx context.Context) error { return h.client.MuteWorklog(ctx) }
+
+func (h *host) StatusReport(ctx context.Context) string { return h.a.StatusReport(ctx, h.client) }
 
 func (h *host) Status() string { return h.a.StatusLine(time.Now()) }
 

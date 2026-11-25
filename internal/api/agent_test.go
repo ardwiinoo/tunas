@@ -285,3 +285,50 @@ func TestHealthzChecksDB(t *testing.T) {
 	}
 	resp.Body.Close()
 }
+
+func TestHeartbeatStats(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	stats := map[string]any{"ts": h.now.Unix(), "v": "main-86a5e8c", "up": 100, "priv_mb": 54.2, "peak_mb": 58.9, "ws_mb": 28.6,
+		"cpu": 0.4, "gor": 31, "q_act": 0, "q_wl": 2, "sync_s": 8, "err": "", "ov": "hidden", "paused": false}
+	code, out := h.do("POST", "/v1/agent/heartbeat", h.token, map[string]any{"version": "main-86a5e8c", "paused": false, "stats": stats})
+	if code != 200 || out["pending_events"] == nil {
+		t.Fatalf("heartbeat with stats = %d %v", code, out)
+	}
+	d, err := h.db.LastSeenDevice(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := h.db.DeviceStats(ctx, d.ID)
+	var got map[string]any
+	if err != nil || json.Unmarshal(raw, &got) != nil || got["priv_mb"] != 54.2 {
+		t.Fatalf("stored stats %s %v", raw, err)
+	}
+	if ts, _ := h.db.LastStatsSampleAt(ctx, "agent", d.ID); ts.IsZero() {
+		t.Fatal("the first heartbeat also stores a 5-minute sample")
+	}
+	// a second one right away does not add another sample
+	h.do("POST", "/v1/agent/heartbeat", h.token, map[string]any{"version": "x", "stats": stats})
+	samples, _ := h.db.StatsSince(ctx, "agent", d.ID, h.now.Add(-time.Hour))
+	if len(samples) != 1 {
+		t.Fatalf("%d samples after two heartbeats", len(samples))
+	}
+
+	// a payload that is not the fixed shape is dropped, the heartbeat still counts
+	_, _ = h.db.Pool.Exec(ctx, `update devices set last_stats = null`)
+	for name, bad := range map[string]map[string]any{
+		"window title": {"ts": h.now.Unix(), "title": "rahasia.docx - Word"},
+		"free text":    {"ts": h.now.Unix(), "err": "dial tcp 10.0.0.5:443: refused"},
+		"huge":         {"ts": h.now.Unix(), "v": strings.Repeat("a", 2000)},
+	} {
+		if code, _ := h.do("POST", "/v1/agent/heartbeat", h.token, map[string]any{"version": "x", "stats": bad}); code != 200 {
+			t.Errorf("%s: the heartbeat must still be accepted, got %d", name, code)
+		}
+		if raw, _ := h.db.DeviceStats(ctx, d.ID); len(raw) != 0 {
+			t.Errorf("%s: stored %s", name, raw)
+		}
+	}
+	if code, _ := h.do("POST", "/v1/agent/heartbeat", h.token, map[string]any{"version": "x", "stats": nil}); code != 200 {
+		t.Error("null stats")
+	}
+}

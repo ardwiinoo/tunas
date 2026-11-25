@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/ardwiinoo/tunas/internal/agentstats"
 	"github.com/ardwiinoo/tunas/internal/llm"
 	"github.com/ardwiinoo/tunas/internal/store"
 )
@@ -41,6 +42,9 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /v1/agent/events/ack", s.auth(s.ackEvents))
 	mux.Handle("GET /v1/agent/state", s.auth(s.getState))
 	mux.Handle("POST /v1/agent/heartbeat", s.auth(s.postHeartbeat))
+	if s.summary != nil {
+		mux.Handle("GET /v1/agent/status/summary", s.auth(s.getStatusSummary))
+	}
 	if s.chat != nil {
 		mux.Handle("POST /v1/agent/chat", s.auth(s.postChat))
 	}
@@ -206,8 +210,9 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 // is already updated by auth) and returns how many events wait for it.
 func (s *Server) postHeartbeat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Version string `json:"version"`
-		Paused  bool   `json:"paused"`
+		Version string          `json:"version"`
+		Paused  bool            `json:"paused"`
+		Stats   json.RawMessage `json:"stats"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -222,6 +227,7 @@ func (s *Server) postHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
+	s.storeAgentStats(r.Context(), d.ID, req.Stats)
 	n, err := s.db.PendingEvents(r.Context(), d.ID)
 	if err != nil {
 		s.log.Error("pending events failed", "err", err)
@@ -229,6 +235,60 @@ func (s *Server) postHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"pending_events": n})
+}
+
+// getStatusSummary is the server, VPS and LLM part of /status for the
+// laptop's bubble and status card (numbers only).
+func (s *Server) getStatusSummary(w http.ResponseWriter, r *http.Request) {
+	text, err := s.summary(r.Context())
+	if err != nil {
+		s.log.Error("status summary failed", "err", err)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"text": text})
+}
+
+// SampleEvery is how often an agent's statistics are also kept as a sample
+// (for the 24 h peak and trend in /status).
+const SampleEvery = 5 * time.Minute
+
+// storeAgentStats keeps the latest statistics of a device. The payload must
+// have the fixed shape of package agentstats; anything else is dropped (the
+// heartbeat itself still counts as a sign of life) and only the canonical
+// re-encoding is stored, never the bytes the client sent.
+func (s *Server) storeAgentStats(ctx context.Context, deviceID int64, raw json.RawMessage) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return
+	}
+	st, err := agentstats.Parse(raw)
+	if err != nil {
+		s.log.Warn("agent statistics dropped", "err", err)
+		return
+	}
+	canon, err := st.Marshal()
+	if err != nil {
+		return
+	}
+	if err := s.db.SetDeviceStats(ctx, deviceID, canon); err != nil {
+		s.log.Warn("agent statistics not stored", "err", err)
+		return
+	}
+	now := s.now()
+	s.statsMu.Lock()
+	if s.statsLast == nil {
+		s.statsLast = map[int64]time.Time{}
+	}
+	due := now.Sub(s.statsLast[deviceID]) >= SampleEvery
+	if due {
+		s.statsLast[deviceID] = now
+	}
+	s.statsMu.Unlock()
+	if due {
+		if err := s.db.AddStatsSample(ctx, now.Truncate(time.Second), "agent", deviceID, st); err != nil {
+			s.log.Warn("agent sample not stored", "err", err)
+		}
+	}
 }
 
 // MaxChatLen bounds overlay chat input (runes).

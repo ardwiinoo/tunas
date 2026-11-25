@@ -15,6 +15,7 @@ import (
 	"github.com/ardwiinoo/tunas/internal/agentstatus"
 	"github.com/ardwiinoo/tunas/internal/reminders"
 	"github.com/ardwiinoo/tunas/internal/search"
+	"github.com/ardwiinoo/tunas/internal/status"
 	"github.com/ardwiinoo/tunas/internal/store"
 )
 
@@ -267,6 +268,7 @@ func (c *Commands) status(ctx context.Context) (string, error) {
 // settingDefs are the switches /settings can change.
 var settingDefs = []struct{ name, key, desc string }{
 	{"notif_status", agentstatus.SettingNotify, "kabar saat laptop offline > 15 menit / kembali online"},
+	{"notif_sumber", status.KeyAlertsOn, "peringatan memori, disk, kontainer, dan pemakaian LLM"},
 }
 
 func (c *Commands) settings(ctx context.Context, args string) (string, error) {
@@ -286,8 +288,11 @@ func (c *Commands) settings(ctx context.Context, args string) (string, error) {
 			return "", err
 		}
 		fmt.Fprintf(&b, "\n• cari_mode: %s — jawaban /cari: llm = dirangkum model, tavily = jawaban Tavily tanpa model (hemat kuota)", mode)
-		b.WriteString("\nUbah: /settings <nama> on|off, mis. /settings notif_status off; /settings cari_mode llm|tavily")
+		b.WriteString("\nUbah: /settings <nama> on|off, mis. /settings notif_status off; /settings cari_mode llm|tavily; /settings ambang")
 		return b.String(), nil
+	}
+	if f[0] == "ambang" {
+		return c.thresholds(ctx, f[1:])
 	}
 	if f[0] == "cari_mode" {
 		if len(f) != 2 || (f[1] != search.ModeLLM && f[1] != search.ModeTavily) {
@@ -312,6 +317,34 @@ func (c *Commands) settings(ctx context.Context, args string) (string, error) {
 		return fmt.Sprintf("✅ %s sekarang %s.", d.name, onOff(on)), nil
 	}
 	return "Pengaturan tidak dikenal. Ketik /settings untuk daftarnya.", nil
+}
+
+// thresholds shows or changes the resource-alert limits.
+func (c *Commands) thresholds(ctx context.Context, f []string) (string, error) {
+	const usage = "Pakai: /settings ambang server|ram|disk|llm <1-100>|reset"
+	if len(f) == 0 {
+		t, err := status.LoadThresholds(ctx, c.DB)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Ambang peringatan (persen):\n• server: %.0f — memori server Tunas dari batas kontainer\n• ram: %.0f — RAM VPS\n• disk: %.0f — disk VPS\n• llm: %.0f — pemakaian LLM harian\n%s",
+			t.ServerMem, t.VPSRAM, t.Disk, t.LLM, usage), nil
+	}
+	if _, ok := status.ThresholdNames[f[0]]; !ok || len(f) != 2 {
+		return usage, nil
+	}
+	reset := f[1] == "reset"
+	v, err := strconv.ParseFloat(strings.Replace(f[1], ",", ".", 1), 64)
+	if !reset && err != nil {
+		return usage, nil
+	}
+	if err := status.SetThreshold(ctx, c.DB, f[0], v, reset); err != nil {
+		return usage, nil
+	}
+	if reset {
+		return "✅ Ambang " + f[0] + " kembali ke bawaan.", nil
+	}
+	return fmt.Sprintf("✅ Ambang %s sekarang %.0f%%.", f[0], v), nil
 }
 
 func onOff(on bool) string {

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ardwiinoo/tunas/internal/agentstats"
 	"github.com/ardwiinoo/tunas/internal/forms"
 )
 
@@ -79,7 +80,7 @@ func (s *scriptedAPI) State(context.Context) (State, error) {
 	}
 	return State{Now: time.Now()}, nil
 }
-func (s *scriptedAPI) Heartbeat(context.Context, string, bool) (int, error) {
+func (s *scriptedAPI) Heartbeat(context.Context, Heartbeat) (int, error) {
 	return 0, nil
 }
 func (s *scriptedAPI) Ack(_ context.Context, upTo int64) error {
@@ -213,5 +214,92 @@ func TestPauseStopsRecording(t *testing.T) {
 	_ = a.SampleOnce(ctx, 10*time.Second)
 	if bs, _ := a.Buf.Pending(ctx, 10); len(bs) != 1 || bs[0].ActiveSeconds != 10 {
 		t.Fatalf("after resume: %+v", bs)
+	}
+}
+
+type fakeProc struct {
+	s   ProcSample
+	err error
+}
+
+func (f *fakeProc) Read() (ProcSample, error) { return f.s, f.err }
+
+func TestSampleStats(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC)
+	fp := &fakeProc{s: ProcSample{PrivateBytes: 54 << 20, WorkingSet: 28 << 20, CPUTime: 2 * time.Second}}
+	a := &Agent{Cfg: testCfg(), Buf: openBuf(t), Log: slog.New(slog.DiscardHandler), Version: "main-86a5e8c", Proc: fp,
+		Now:          func() time.Time { return now },
+		OverlayState: func() string { return "hidden" }}
+	a.init()
+	if _, ok := a.Stats(); ok {
+		t.Fatal("no sample yet")
+	}
+	a.SampleStats(ctx)
+	s, ok := a.Stats()
+	if !ok || s.PrivateMB != 54 || s.WorkingMB != 28 || s.Version != "main-86a5e8c" || s.Overlay != "hidden" || s.SyncAgeS != -1 || s.CPUPct != 0 {
+		t.Fatalf("first sample %+v", s)
+	}
+	// 0.3 s of CPU in 30 s is 1% of one core, shared over the machine's cores
+	now = now.Add(30 * time.Second)
+	fp.s.CPUTime = 2300 * time.Millisecond
+	fp.s.PrivateBytes = 70 << 20 // a peak
+	a.SampleStats(ctx)
+	fp.s.PrivateBytes = 56 << 20
+	now = now.Add(30 * time.Second)
+	a.SampleStats(ctx)
+	s, _ = a.Stats()
+	if want := 100 * 0.0 / 1; s.CPUPct < want || s.CPUPct > 2 {
+		t.Fatalf("cpu %v", s.CPUPct)
+	}
+	if s.PeakPrivMB != 70 || s.PrivateMB != 56 {
+		t.Fatalf("peak since the last heartbeat is kept: %+v", s)
+	}
+	hb := a.statsForHeartbeat()
+	if hb == nil || hb.PeakPrivMB != 70 {
+		t.Fatalf("heartbeat sample %+v", hb)
+	}
+	if s2, _ := a.Stats(); s2.PeakPrivMB != 70 {
+		t.Fatal("the latest sample is unchanged by sending it")
+	}
+	// the peak window restarts after a heartbeat
+	now = now.Add(30 * time.Second)
+	a.SampleStats(ctx)
+	if s3, _ := a.Stats(); s3.PeakPrivMB != 56 {
+		t.Fatalf("peak after the heartbeat: %v", s3.PeakPrivMB)
+	}
+
+	// what goes on the wire is the fixed shape, small, and free of text
+	raw, err := hb.Marshal()
+	if err != nil || len(raw) >= agentstats.MaxSize {
+		t.Fatalf("wire sample %d bytes: %v", len(raw), err)
+	}
+	for _, banned := range []string{"title", "token", "tnd_", "http", "\\"} {
+		if strings.Contains(string(raw), banned) {
+			t.Fatalf("the sample holds %q: %s", banned, raw)
+		}
+	}
+	// a failed read leaves the previous sample alone
+	fp.err = errors.New("no counters")
+	a.SampleStats(ctx)
+	if s4, ok := a.Stats(); !ok || s4.PrivateMB != 56 {
+		t.Fatal("a failed read must keep the last sample")
+	}
+}
+
+func TestErrKindIsAFixedWord(t *testing.T) {
+	for err, want := range map[error]string{
+		nil: "", &StatusError{Code: 401}: "auth", &StatusError{Code: 403}: "auth", &StatusError{Code: 503}: "server",
+		&StatusError{Code: 400}: "other", context.DeadlineExceeded: "timeout", timeoutErr: "network",
+		errors.New("dial tcp 10.1.2.3:443: no route to host"): "other",
+	} {
+		if got := errKind(err); got != want {
+			t.Errorf("errKind(%v) = %q, want %q", err, got, want)
+		}
+		if got := errKind(err); got != "" {
+			if err2 := (agentstats.Stats{TS: 1, LastErr: got}).Validate(); err2 != nil {
+				t.Errorf("kind %q is not accepted by the server: %v", got, err2)
+			}
+		}
 	}
 }

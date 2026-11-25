@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ardwiinoo/tunas/internal/agentstats"
 )
 
 // Event is a server event as seen by the agent.
@@ -124,12 +126,23 @@ func (c *Client) State(ctx context.Context) (State, error) {
 
 // Heartbeat reports the agent's version and tracking state; the server
 // answers with the number of events still waiting for this device.
-func (c *Client) Heartbeat(ctx context.Context, version string, paused bool) (int, error) {
+func (c *Client) Heartbeat(ctx context.Context, hb Heartbeat) (int, error) {
 	var out struct {
 		Pending int `json:"pending_events"`
 	}
-	err := c.do(ctx, http.MethodPost, "/v1/agent/heartbeat", map[string]any{"version": version, "paused": paused}, &out)
+	body := map[string]any{"version": hb.Version, "paused": hb.Paused}
+	if hb.Stats != nil {
+		body["stats"] = hb.Stats
+	}
+	err := c.do(ctx, http.MethodPost, "/v1/agent/heartbeat", body, &out)
 	return out.Pending, err
+}
+
+// Heartbeat is what the agent reports every minute.
+type Heartbeat struct {
+	Version string
+	Paused  bool
+	Stats   *agentstats.Stats // the latest self-sample (nil before the first)
 }
 
 // ChatReply is the server's answer to a bubble message. A non-empty

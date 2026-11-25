@@ -161,6 +161,10 @@ type Client struct {
 	// OnBlocked is called when the gateway refuses a model (401/403/404),
 	// even if a fallback then answers: a configuration problem for the owner.
 	OnBlocked func(model string, status int)
+	// OnAttempt is called after every model try that was not cancelled by the
+	// caller: ok, or the failure kind (see the Kind* constants), and how long
+	// it took. Used for the per-model usage in /status.
+	OnAttempt func(model string, ok bool, kind string, d time.Duration)
 }
 
 // Default budgets.
@@ -230,11 +234,17 @@ func (c *Client) Complete(ctx context.Context, msgs []Message) (string, error) {
 			return "", ctx.Err()
 		}
 		if err == nil {
+			if c.OnAttempt != nil {
+				c.OnAttempt(model, true, "", time.Since(t0))
+			}
 			c.Log.Info("llm attempt", "model", model, "attempt", i+1, "status", "ok",
 				"ms", time.Since(t0).Milliseconds(), "total_ms", time.Since(start).Milliseconds())
 			return content, nil
 		}
 		kind := attemptKind(err)
+		if c.OnAttempt != nil {
+			c.OnAttempt(model, false, kind, time.Since(t0))
+		}
 		fe.Attempts = append(fe.Attempts, Attempt{Model: model, Kind: kind, Err: err})
 		c.Log.Warn("llm attempt", "model", model, "attempt", i+1, "status", statusOf(err), "kind", kind,
 			"err", err, "ms", time.Since(t0).Milliseconds())

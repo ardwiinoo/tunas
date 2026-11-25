@@ -19,7 +19,7 @@ type API interface {
 	Events(ctx context.Context, after int64, wait time.Duration) ([]Event, error)
 	Ack(ctx context.Context, upTo int64) error
 	State(ctx context.Context) (State, error)
-	Heartbeat(ctx context.Context, version string, paused bool) (int, error)
+	Heartbeat(ctx context.Context, hb Heartbeat) (int, error)
 }
 
 const (
@@ -39,6 +39,12 @@ type Agent struct {
 	Now     func() time.Time
 	// OnForm is called when the computed form or speech changes (overlay hook).
 	OnForm func(out forms.Output)
+	// Proc reads the agent's own memory and CPU (statistics for /status).
+	Proc ProcReader
+	// OverlayState reports "off", "hidden" or "visible" (statistics).
+	OverlayState func() string
+	// StatsFile, when set, receives every sample (for `tunas-agent.exe --status`).
+	StatsFile string
 	// OnConn is called when the connection state changes (tray icon).
 	OnConn func(ConnState)
 	// Version is reported in the heartbeat.
@@ -65,6 +71,7 @@ type Agent struct {
 	paused    bool
 
 	worklogKick chan struct{}
+	stats       statsState
 	lastIdle    time.Duration // idle time at the last sample
 	lastSync    time.Time     // last successful upload (tray status)
 }
@@ -117,6 +124,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	wg.Go(func() { a.eventLoop(ctx) })
 	wg.Go(func() { a.heartbeatLoop(ctx) })
 	wg.Go(func() { a.worklogLoop(ctx) })
+	wg.Go(func() { a.statsLoop(ctx) })
 	a.queueChanged(ctx)
 
 	interval := time.Duration(a.Cfg.SampleIntervalSeconds) * time.Second
@@ -240,8 +248,10 @@ func (a *Agent) syncLoop(ctx context.Context) {
 			failures++
 			wait = backoff(base, failures)
 			a.Log.Warn("sync failed", "err", err, "retry_in", wait.String())
+			a.noteResult(err)
 			continue
 		}
+		a.noteResult(nil)
 		if failures > 0 {
 			a.Log.Info("sync recovered", "uploaded", n)
 		}

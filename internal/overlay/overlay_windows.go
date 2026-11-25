@@ -163,6 +163,7 @@ type Overlay struct {
 	OnQuit       func()       // tray "Keluar"
 	LogPath      string       // tray "Buka log" ("" = disabled, e.g. --debug)
 	conn         atomic.Int32 // agent.ConnState, set from any goroutine
+	visible      atomic.Bool  // mirrors shown for State()
 
 	cfg      config.AgentOverlay
 	log      *slog.Logger
@@ -212,6 +213,17 @@ type Overlay struct {
 
 // SetConn updates the tray status colour (safe from any goroutine).
 func (o *Overlay) SetConn(s agent.ConnState) { o.conn.Store(int32(s)) }
+
+// State is "off" (tray only), "visible" or "hidden"; safe from any goroutine.
+func (o *Overlay) State() string {
+	switch {
+	case o.CharacterOff:
+		return "off"
+	case o.visible.Load():
+		return "visible"
+	}
+	return "hidden"
+}
 
 var theOverlay *Overlay // the window procedure needs a global
 
@@ -493,6 +505,13 @@ func (o *Overlay) onChar(u uint16, now time.Time) {
 func (o *Overlay) ask(ctx context.Context, cancel context.CancelFunc, req int, text string, f forms.Form, history []agent.ChatTurn) {
 	defer cancel()
 	start := time.Now()
+	if IsStatusCommand(text) && o.tray.Host != nil { // answered here: the numbers of this laptop come first
+		select {
+		case o.replyCh <- chatResult{req: req, reply: o.tray.Host.StatusReport(ctx)}:
+		case <-o.ctx.Done():
+		}
+		return
+	}
 	reply, err := o.chat.Chat(ctx, text, string(f), history)
 	res := chatResult{req: req, reply: reply.Reply, confirmID: reply.ConfirmID, search: reply.Search, sources: SourceNames(reply.Sources)}
 	if errors.Is(err, context.Canceled) && o.ctx.Err() == nil {
@@ -593,6 +612,7 @@ func (o *Overlay) tick(now time.Time) {
 func (o *Overlay) sync(now time.Time) {
 	if o.p.Visible() != o.shown {
 		o.shown = o.p.Visible()
+		o.visible.Store(o.shown)
 		if o.shown {
 			o.place()
 			cmd := uintptr(swShowNoActive)

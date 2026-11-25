@@ -78,8 +78,9 @@ func (a *Agent) heartbeatLoop(ctx context.Context) {
 	failing := false
 	for {
 		hctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		pending, err := a.API.Heartbeat(hctx, a.Version, a.Paused())
+		pending, err := a.API.Heartbeat(hctx, Heartbeat{Version: a.Version, Paused: a.Paused(), Stats: a.statsForHeartbeat()})
 		cancel()
+		a.noteResult(err)
 		switch {
 		case err != nil && ctx.Err() == nil && !failing:
 			a.Log.Warn("heartbeat failed", "err", err)
