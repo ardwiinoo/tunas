@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ardwiinoo/tunas/internal/agent"
 	"github.com/ardwiinoo/tunas/internal/forms"
@@ -85,11 +86,12 @@ func TestLoadingStateMachineSuccess(t *testing.T) {
 	if p.Revealed(clk.now) != 0 || p.Revealed(clk.now.Add(HopFor-time.Millisecond)) != 0 {
 		t.Fatal("no text during the hop")
 	}
-	if n := p.Revealed(clk.now.Add(HopFor + time.Second)); n != TypeRate {
-		t.Fatalf("after 1 s of typing %d runes, want %d", n, TypeRate)
+	total := utf8.RuneCountInString(answer)
+	if n, want := p.Revealed(clk.now.Add(HopFor+time.Second)), int(float64(total)/p.SpeechFor(total).Seconds()); n != want {
+		t.Fatalf("after 1 s of typing %d runes, want %d", n, want)
 	}
-	if l := p.Look(clk.now.Add(HopFor)); l.Form != forms.Biasa || l.Hop != 0 {
-		t.Fatal("back to the normal pose after the hop")
+	if l := p.Look(clk.now.Add(HopFor)); l.Form != forms.Bicara || l.Hop != 0 {
+		t.Fatalf("after the hop Tunas talks: %+v", l)
 	}
 	if !p.KeysWanted() {
 		t.Fatal("Enter must reach the window to skip the typing")

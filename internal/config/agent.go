@@ -25,6 +25,15 @@ type Agent struct {
 	Animations            bool                `yaml:"animations"` // false: static poses, no typing effect
 	Bubble                AgentBubble         `yaml:"bubble"`
 	WorklogBubbleInFocus  bool                `yaml:"worklog_bubble_in_focus"` // worklog bubbles also in form fokus
+	Speech                AgentSpeech         `yaml:"speech"`
+}
+
+// AgentSpeech sets the "bicara" gesture: an answer is typed out over
+// len(text) × ms_per_char, kept between min_seconds and max_seconds.
+type AgentSpeech struct {
+	MsPerChar  int     `yaml:"ms_per_char"`
+	MinSeconds float64 `yaml:"min_seconds"`
+	MaxSeconds float64 `yaml:"max_seconds"`
 }
 
 // AgentBubble configures the chat bubble.
@@ -90,6 +99,7 @@ func DefaultAgent() *Agent {
 		Loading:    AgentLoading{SlowAfterSeconds: 3, VerySlowAfterSeconds: 8},
 		Animations: true,
 		Bubble:     AgentBubble{IdleCloseSeconds: 60},
+		Speech:     AgentSpeech{MsPerChar: 40, MinSeconds: 2, MaxSeconds: 8},
 	}
 }
 
@@ -159,6 +169,9 @@ func (c *Agent) Validate() error {
 	}
 	if l := c.Loading; l.SlowAfterSeconds < 1 || l.VerySlowAfterSeconds <= l.SlowAfterSeconds || l.VerySlowAfterSeconds > 30 {
 		errs = append(errs, errors.New("loading: need 1 <= slow_after_seconds < very_slow_after_seconds <= 30"))
+	}
+	if sp := c.Speech; sp.MsPerChar < 5 || sp.MsPerChar > 500 || sp.MinSeconds <= 0 || sp.MaxSeconds < sp.MinSeconds || sp.MaxSeconds > 30 {
+		errs = append(errs, errors.New("speech: need 5 <= ms_per_char <= 500 and 0 < min_seconds <= max_seconds <= 30"))
 	}
 	if n := c.Bubble.IdleCloseSeconds; n < 10 || n > 600 {
 		errs = append(errs, errors.New("bubble.idle_close_seconds must be 10..600"))

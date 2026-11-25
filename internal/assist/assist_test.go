@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/ardwiinoo/tunas/internal/llm"
-	"github.com/ardwiinoo/tunas/internal/search"
 	"github.com/ardwiinoo/tunas/internal/store"
 	"github.com/ardwiinoo/tunas/internal/store/storetest"
 	"github.com/ardwiinoo/tunas/modes"
@@ -334,50 +333,6 @@ func TestSetForm(t *testing.T) {
 	evs, _ := db.EventsAfter(ctx, 1, 0, 10)
 	if len(evs) != 2 || evs[0].Type != "form.set" || !strings.Contains(string(evs[1].Payload), "auto") {
 		t.Fatalf("events = %+v", evs)
-	}
-}
-
-type fakeSearch struct {
-	rs  []search.Result
-	err error
-	q   string
-}
-
-func (f *fakeSearch) Search(_ context.Context, q string) ([]search.Result, error) {
-	f.q = q
-	return f.rs, f.err
-}
-
-func TestSearch(t *testing.T) {
-	fs := &fakeSearch{rs: []search.Result{
-		{Title: "Libur 2027", URL: "https://contoh.go.id/libur", Content: "Daftar libur nasional 2027 ..."},
-		{Title: "Kalender", URL: "https://contoh.id/kal", Content: strings.Repeat("x", 2000)},
-	}}
-	f := &fakeLLM{replies: []string{"Libur nasional 2027 ada di [1]."}}
-	a, _, _ := setup(t, f)
-	got := a.Search(context.Background(), fs, " libur nasional 2027 ")
-	if fs.q != "libur nasional 2027" || !strings.HasPrefix(got, "Libur nasional 2027 ada di [1].") ||
-		!strings.Contains(got, "Sumber:\n[1] https://contoh.go.id/libur\n[2] https://contoh.id/kal") {
-		t.Fatalf("got %q", got)
-	}
-	facts := f.seen[0][1].Content
-	if !strings.Contains(facts, "[1] Libur 2027") || strings.Count(facts, "x") > 700 {
-		t.Fatalf("facts not built/trimmed: %d x", strings.Count(facts, "x"))
-	}
-
-	// LLM down: titles + sources from code
-	a2, _, _ := setup(t, &fakeLLM{err: errors.New("down")})
-	got = a2.Search(context.Background(), fs, "libur")
-	if !strings.HasPrefix(got, "Hasil pencarian:\n[1] Libur 2027") || !strings.Contains(got, "Sumber:") {
-		t.Fatalf("fallback = %q", got)
-	}
-	for err, want := range map[error]string{search.ErrQuota: "habis", search.ErrDisabled: "belum disetel", errors.New("x"): "gagal"} {
-		if got := a2.Search(context.Background(), &fakeSearch{err: err}, "q"); !strings.Contains(got, want) {
-			t.Errorf("%v → %q", err, got)
-		}
-	}
-	if got := a2.Search(context.Background(), &fakeSearch{}, "q"); !strings.Contains(got, "Tidak ada hasil") {
-		t.Errorf("empty → %q", got)
 	}
 }
 

@@ -30,6 +30,9 @@ func TestClassifyChatError(t *testing.T) {
 		case "blocked", "quota", "down":
 			w.WriteHeader(503)
 			_, _ = w.Write([]byte(`{"error":"llm_` + req["text"] + `"}`))
+		case "cari":
+			_, _ = w.Write([]byte(`{"reply":"Jawaban [1].","search":true,"sources":[{"title":"J","url":"https://www.kompas.com/a"}]}`))
+			return
 		case "auth":
 			w.WriteHeader(401)
 		case "proxy":
@@ -48,6 +51,10 @@ func TestClassifyChatError(t *testing.T) {
 		if got := ClassifyChatError(err); got != want {
 			t.Errorf("%s: %v → %s, want %s", text, err, got, want)
 		}
+	}
+
+	if r, err := c.Chat(context.Background(), "cari", "", nil); err != nil || !r.Search || len(r.Sources) != 1 || r.Sources[0].URL != "https://www.kompas.com/a" {
+		t.Fatalf("search reply = %+v %v", r, err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)

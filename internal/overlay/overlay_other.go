@@ -30,6 +30,9 @@ type Overlay struct {
 // Configure does nothing.
 func (*Overlay) Configure(time.Duration, time.Duration, bool, LoadingLines) {}
 
+// ConfigureSpeech does nothing.
+func (*Overlay) ConfigureSpeech(time.Duration, time.Duration, time.Duration) {}
+
 // SetIdleClose does nothing.
 func (*Overlay) SetIdleClose(time.Duration) {}
 

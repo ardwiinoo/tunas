@@ -14,6 +14,7 @@ import (
 	"github.com/ardwiinoo/tunas/internal/activity"
 	"github.com/ardwiinoo/tunas/internal/agentstatus"
 	"github.com/ardwiinoo/tunas/internal/reminders"
+	"github.com/ardwiinoo/tunas/internal/search"
 	"github.com/ardwiinoo/tunas/internal/store"
 )
 
@@ -29,6 +30,8 @@ type Commands struct {
 	Loc *time.Location
 	Now func() time.Time
 	Log *slog.Logger
+	// StatusExtra adds lines to /status (e.g. the web-search credits).
+	StatusExtra func(ctx context.Context) string
 	// Extra handles commands added by later phases (/today, /tanya, /form).
 	// It returns handled=false for unknown commands.
 	Extra func(ctx context.Context, cmd, args string) (reply string, handled bool)
@@ -252,7 +255,13 @@ func (c *Commands) status(ctx context.Context) (string, error) {
 	if len(parts) == 0 {
 		return "Belum ada perangkat. Buat dulu di server: tunas-server device create --name laptop", nil
 	}
-	return strings.Join(parts, "\n\n"), nil
+	out := strings.Join(parts, "\n\n")
+	if c.StatusExtra != nil {
+		if extra := c.StatusExtra(ctx); extra != "" {
+			out += "\n\n" + extra
+		}
+	}
+	return out, nil
 }
 
 // settingDefs are the switches /settings can change.
@@ -272,8 +281,22 @@ func (c *Commands) settings(ctx context.Context, args string) (string, error) {
 			}
 			fmt.Fprintf(&b, "\n• %s: %s — %s", d.name, onOff(on), d.desc)
 		}
-		b.WriteString("\nUbah: /settings <nama> on|off, mis. /settings notif_status off")
+		mode, err := search.AnswerMode(ctx, c.DB)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&b, "\n• cari_mode: %s — jawaban /cari: llm = dirangkum model, tavily = jawaban Tavily tanpa model (hemat kuota)", mode)
+		b.WriteString("\nUbah: /settings <nama> on|off, mis. /settings notif_status off; /settings cari_mode llm|tavily")
 		return b.String(), nil
+	}
+	if f[0] == "cari_mode" {
+		if len(f) != 2 || (f[1] != search.ModeLLM && f[1] != search.ModeTavily) {
+			return "Pakai: /settings cari_mode llm|tavily", nil
+		}
+		if err := c.DB.SetSetting(ctx, search.KeyAnswerMode, f[1]); err != nil {
+			return "", err
+		}
+		return "✅ cari_mode sekarang " + f[1] + ".", nil
 	}
 	for _, d := range settingDefs {
 		if f[0] != d.name {

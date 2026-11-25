@@ -36,6 +36,11 @@ func TestRenderAllForms(t *testing.T) {
 		look{"sedih", forms.Sedih, Anim{T: 1}},
 		look{"berhasil_hop", forms.Senang, Anim{T: 10, Hop: 0.5}},
 		look{"mikir_still", forms.Mikir, Anim{T: 0.5, Still: true}},
+		look{"bicara_tutup", forms.Bicara, Anim{T: 1, Talk: 0, Env: 1}},
+		look{"bicara_buka", forms.Bicara, Anim{T: 1.2, Talk: 1.2, Env: 1}},
+		look{"bicara_angguk", forms.Bicara, Anim{T: 2, Talk: 5, Nod: 1, Env: 1}},
+		look{"bicara_cari", forms.BicaraCari, Anim{T: 1.2, Talk: 1.2, Env: 1}},
+		look{"bicara_still", forms.Bicara, Anim{T: 1.2, Talk: 1.2, Env: 1, Still: true}},
 	)
 	for _, lk := range looks {
 		f := lk.name

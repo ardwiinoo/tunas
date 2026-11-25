@@ -13,6 +13,7 @@ import (
 	"github.com/go-telegram/bot/models"
 
 	"github.com/ardwiinoo/tunas/internal/agentstatus"
+	"github.com/ardwiinoo/tunas/internal/search"
 	"github.com/ardwiinoo/tunas/internal/store"
 	"github.com/ardwiinoo/tunas/internal/store/storetest"
 )
@@ -163,5 +164,40 @@ func TestStatusAndSettings(t *testing.T) {
 	}
 	if got := c.Handle(ctx, "/settings apa on"); !strings.Contains(got, "tidak dikenal") {
 		t.Fatalf("unknown: %q", got)
+	}
+}
+
+func TestStatusShowsSearchCreditsAndCariMode(t *testing.T) {
+	db := storetest.New(t)
+	loc, _ := time.LoadLocation("Asia/Jakarta")
+	now := time.Date(2026, 11, 25, 10, 0, 0, 0, loc)
+	c := &Commands{DB: db, Loc: loc, Now: func() time.Time { return now }, Log: slog.New(slog.DiscardHandler)}
+	ctx := context.Background()
+	cr := &search.Credits{DB: db, Now: c.Now, Loc: loc}
+	c.StatusExtra = func(ctx context.Context) string {
+		line, _ := cr.Line(ctx)
+		return "🔎 " + line
+	}
+	if _, _, _, err := cr.Add(ctx, 3); err != nil {
+		t.Fatal(err)
+	}
+	d, tok, _ := db.CreateDevice(ctx, "laptop")
+	_, _ = db.AuthDevice(ctx, tok, now)
+	_ = d
+	if got := c.Handle(ctx, "/status"); !strings.Contains(got, "🔎 Pencarian web: 3 kredit hari ini, 3/1000 bulan ini (sisa 997)") {
+		t.Fatalf("/status = %q", got)
+	}
+
+	if got := c.Handle(ctx, "/settings"); !strings.Contains(got, "cari_mode: llm") {
+		t.Fatalf("/settings = %q", got)
+	}
+	if got := c.Handle(ctx, "/settings cari_mode tavily"); !strings.Contains(got, "cari_mode sekarang tavily") {
+		t.Fatalf("set mode = %q", got)
+	}
+	if m, _ := search.AnswerMode(ctx, db); m != search.ModeTavily {
+		t.Fatal("mode not stored")
+	}
+	if got := c.Handle(ctx, "/settings cari_mode ngawur"); !strings.Contains(got, "Pakai") {
+		t.Fatalf("bad mode = %q", got)
 	}
 }

@@ -111,15 +111,29 @@ func serve() error {
 	}
 	log.Info("llm", "enabled", cfg.LLMEnabled(), "primary", cfg.LLMPrimaryModel, "fallbacks", len(cfg.LLMFallbackModels))
 	asst := assist.New(db, completer, ms, cfg.Location, time.Now, log)
-	searcher := search.NewTavily(cfg.TavilyAPIKey)
+	if cfg.TavilyAPIKey != "" {
+		asst.Searcher = search.NewTavily(cfg.TavilyAPIKey)
+		asst.Credits = &search.Credits{DB: db, Now: time.Now, Loc: cfg.Location}
+	} else {
+		log.Info("web search off (TAVILY_API_KEY empty); /cari says so")
+	}
 
 	cmds := &bot.Commands{DB: db, Loc: cfg.Location, Now: time.Now, Log: log}
+	if asst.Credits != nil {
+		cmds.StatusExtra = func(ctx context.Context) string {
+			line, err := asst.Credits.Line(ctx)
+			if err != nil {
+				return ""
+			}
+			return "🔎 " + line
+		}
+	}
 	cmds.Extra = func(ctx context.Context, cmd, args string) (string, bool) {
 		switch cmd {
 		case "tanya":
 			return asst.Ask(ctx, args), true
 		case "cari":
-			return asst.Search(ctx, searcher, args), true
+			return asst.SearchText(ctx, args), true
 		case "export":
 			return exportData(ctx, db, tgBot, log), true
 		case "form":
@@ -186,8 +200,14 @@ func serve() error {
 			// the bubble uses the same pipeline as Telegram (intent, fixed
 			// queries, confirmation), plus "cari ..." for web search
 			Chat: func(ctx context.Context, form, text string, history []api.ChatTurn) (api.ChatResult, error) {
-				if q, ok := cutPrefixFold(text, "cari "); ok {
-					return api.ChatResult{Reply: asst.Search(ctx, searcher, q)}, nil
+				// /cari from the bubble (the allowed command; "cari ..." works too)
+				if q, ok := searchQuery(text); ok {
+					r := asst.Search(ctx, q)
+					res := api.ChatResult{Reply: r.Text, Search: r.Searched}
+					for _, s := range r.Sources {
+						res.Sources = append(res.Sources, api.ChatSource{Title: s.Title, URL: s.URL})
+					}
+					return res, nil
 				}
 				f := forms.Form(form)
 				if !forms.Valid(f) {
@@ -413,6 +433,15 @@ func exportData(ctx context.Context, db *store.DB, tg *bot.Telegram, log *slog.L
 		return "Maaf, gagal mengirim berkas ekspor."
 	}
 	return ""
+}
+
+// searchQuery recognises "/cari <kueri>" and "cari <kueri>" in the bubble.
+func searchQuery(text string) (string, bool) {
+	t := strings.TrimSpace(text)
+	if q, ok := cutPrefixFold(t, "/cari "); ok {
+		return q, true
+	}
+	return cutPrefixFold(t, "cari ")
 }
 
 // cutPrefixFold is strings.CutPrefix ignoring ASCII case.

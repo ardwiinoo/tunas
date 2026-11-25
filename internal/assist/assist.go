@@ -23,6 +23,7 @@ import (
 	"github.com/ardwiinoo/tunas/internal/forms"
 	"github.com/ardwiinoo/tunas/internal/llm"
 	"github.com/ardwiinoo/tunas/internal/reminders"
+	"github.com/ardwiinoo/tunas/internal/search"
 	"github.com/ardwiinoo/tunas/internal/store"
 	"github.com/ardwiinoo/tunas/modes"
 )
@@ -47,6 +48,10 @@ type Assistant struct {
 	Loc   *time.Location
 	Now   func() time.Time
 	Log   *slog.Logger
+	// Web search for /cari (nil Searcher = "not configured"); Credits counts
+	// what Tavily charges. Set by the server.
+	Searcher search.Searcher
+	Credits  *search.Credits
 
 	mu      sync.Mutex
 	pending map[string]pendingAction
