@@ -40,6 +40,19 @@ func TestTodayShowsProjectsAndSettingDefaultsOff(t *testing.T) {
 		t.Fatalf("/today:\n%s", got)
 	}
 
+	var db2 []store.DomainBucket
+	for i := 0; i < 30; i++ {
+		db2 = append(db2, store.DomainBucket{Start: start.Add(time.Duration(i) * time.Minute), Domain: "github.com", ActiveSeconds: 60})
+	}
+	if _, err := db.UpsertDomainBuckets(ctx, d.ID, db2); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Handle(ctx, "/today"); !strings.Contains(got, "Situs teratas:\n1. github.com — 30m") {
+		t.Fatalf("/today without the sites:\n%s", got)
+	}
+	if got := c.Handle(ctx, "/settings"); !strings.Contains(got, "domain_llm: off") || !strings.Contains(got, "notif_domain: on") {
+		t.Fatalf("site names go to the LLM only when allowed (default off):\n%s", got)
+	}
 	if got := c.Handle(ctx, "/settings"); !strings.Contains(got, "proyek_llm: off") {
 		t.Fatalf("project names go to the LLM only when allowed (default off):\n%s", got)
 	}

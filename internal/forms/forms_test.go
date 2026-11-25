@@ -7,7 +7,6 @@ import (
 )
 
 var cfg = Config{
-	TegurAfter: 30 * time.Minute, TegurCooldown: 45 * time.Minute, TegurFor: 10 * time.Second,
 	TidurAfterIdle: 10 * time.Minute, SenangFor: 5 * time.Second, ReminderFor: 15 * time.Second,
 	IdleMotionMin: 3 * time.Minute, IdleMotionMax: 7 * time.Minute,
 }
@@ -28,10 +27,8 @@ func TestPriorities(t *testing.T) {
 		{"work", Signals{Category: "work"}, Fokus, ""},
 		{"idle 9m still fokus", Signals{Category: "work", Idle: 9 * time.Minute}, Fokus, ""},
 		{"idle 10m", Signals{Category: "work", Idle: 10 * time.Minute}, Tidur, "Zzz..."},
-		{"tegur over tidur", Signals{Idle: 20 * time.Minute, DistractStreak: 31 * time.Minute}, Tegur, tegurSpeech},
-		{"distract 29m", Signals{Category: "distract", DistractStreak: 29 * time.Minute}, Biasa, ""},
-		{"distract 30m", Signals{Category: "distract", DistractStreak: 30 * time.Minute}, Tegur, tegurSpeech},
-		{"senang over tegur", Signals{DistractStreak: time.Hour, TaskDoneAt: t0.Add(-2 * time.Second)}, Senang, "Yeay, satu tugas beres! 🎉"},
+		{"distract is biasa (the nudge is separate: see Nudge)", Signals{Category: "distract"}, Biasa, ""},
+		{"senang", Signals{TaskDoneAt: t0.Add(-2 * time.Second)}, Senang, "Yeay, satu tugas beres! 🎉"},
 		{"senang expired", Signals{Category: "work", TaskDoneAt: t0.Add(-5 * time.Second)}, Fokus, ""},
 		{"ingat over senang", Signals{TaskDoneAt: t0, ReminderAt: t0.Add(-time.Second), ReminderText: "minum"}, Ingat, "minum"},
 		{"ingat expired", Signals{Category: "work", ReminderAt: t0.Add(-15 * time.Second), ReminderText: "x"}, Fokus, ""},
@@ -54,29 +51,6 @@ func TestDurations(t *testing.T) {
 	out := m.Step(Signals{Now: t0, ReminderAt: t0.Add(-5 * time.Second), ReminderText: "x"})
 	if out.Duration != 10*time.Second {
 		t.Fatalf("ingat duration = %v", out.Duration)
-	}
-}
-
-func TestTegurCooldown(t *testing.T) {
-	m := newM()
-	streak := 30 * time.Minute
-	step := func(at time.Time) Form {
-		return m.Step(Signals{Now: at, Category: "distract", DistractStreak: streak}).Form
-	}
-	if step(t0) != Tegur {
-		t.Fatal("first tegur")
-	}
-	if step(t0.Add(5*time.Second)) != Tegur {
-		t.Fatal("tegur should stay for TegurFor")
-	}
-	if step(t0.Add(10*time.Second)) != Biasa {
-		t.Fatal("tegur should end after TegurFor")
-	}
-	if step(t0.Add(44*time.Minute)) != Biasa {
-		t.Fatal("cooldown not respected")
-	}
-	if step(t0.Add(45*time.Minute)) != Tegur {
-		t.Fatal("tegur after cooldown")
 	}
 }
 
@@ -104,20 +78,6 @@ func TestIdleMotion(t *testing.T) {
 	// fokus never moves
 	if m.Step(Signals{Now: t0.Add(time.Hour), Category: "work"}).Motion {
 		t.Fatal("motion while fokus")
-	}
-}
-
-func TestStreak(t *testing.T) {
-	var s Streak
-	dt := 10 * time.Second
-	for i := 0; i < 6; i++ {
-		s.Add("distract", false, dt)
-	}
-	if got := s.Add("distract", true, dt); got != time.Minute {
-		t.Fatalf("idle sample changed streak: %v", got)
-	}
-	if got := s.Add("work", false, dt); got != 0 {
-		t.Fatalf("work should reset: %v", got)
 	}
 }
 

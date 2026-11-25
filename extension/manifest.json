@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Tunas: catat domain situs",
+  "description": "Mengirim hanya nama domain situs yang sedang aktif ke agen Tunas di laptop ini (127.0.0.1). Tanpa path, judul, atau isi halaman.",
+  "version": "1.0.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAziTu+Y7dc4cwQPZeuIsBslDaqO9lsxQNZ012qEFsSHKAzX2hk8uKrrYtEbPSTXNFjGvAsLeTr7XsLvCPAXtqQp6i51BZNzWJ9NoE/W/zr3Ad4/XR+9bNdWQaA7rB1C6A74oTxt3RT1r0iflI0ZEUd/SsrYo+KgcqVahUVFlzzQp+Bx9+Kwo/Fpno/80H/rMBpnQLr0WpgVA/GTn6usnA96vxs6r7A4yxnNs+opSnSztHqi2Ej/Pdoh3NzB+IGZRt8GnoOjzwy7mp6QYwSIJdH3rclFp1KypRZifVyWn7EduqbUS76js2/FvCcH2ML+Kbw1X4H7RZiXRkipsifjumrwIDAQAB",
+  "permissions": [
+    "tabs",
+    "storage"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "incognito": "not_allowed",
+  "minimum_chrome_version": "110"
+}

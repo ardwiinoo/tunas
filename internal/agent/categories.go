@@ -21,6 +21,10 @@ type CategorySet struct {
 	ETag      string
 	Apps      map[string]string // lower-case app → category
 	Blocklist []string          // projects that are never recorded (always sent)
+
+	DomainCategories map[string]string // website → category (only when the etag changed)
+	DomainBlocklist  []string          // websites that are never recorded (always sent)
+	TegurEnabled     *bool             // /tegur on|off (always sent)
 }
 
 // CategoryAPI is the optional part of the client that serves the mapping.
@@ -36,13 +40,18 @@ func (c *Client) Categories(ctx context.Context, etag string) (CategorySet, erro
 		ETag      string            `json:"categories_etag"`
 		Apps      map[string]string `json:"app_categories"`
 		Blocklist []string          `json:"project_blocklist"`
+
+		DomainCategories map[string]string `json:"domain_categories"`
+		DomainBlocklist  []string          `json:"domain_blocklist"`
+		TegurEnabled     *bool             `json:"tegur_enabled"`
 	}
 	path := "/v1/agent/state"
 	if etag != "" {
 		path += "?categories_etag=" + url.QueryEscape(etag)
 	}
 	err := c.do(ctx, http.MethodGet, path, nil, &out)
-	return CategorySet{ETag: out.ETag, Apps: out.Apps, Blocklist: out.Blocklist}, err
+	return CategorySet{ETag: out.ETag, Apps: out.Apps, Blocklist: out.Blocklist, DomainCategories: out.DomainCategories,
+		DomainBlocklist: out.DomainBlocklist, TegurEnabled: out.TegurEnabled}, err
 }
 
 // SeedCategories sends the apps of config.yaml; the server adds the ones it
@@ -77,8 +86,9 @@ func (a *Agent) setCategories(set CategorySet) {
 }
 
 type savedCategories struct {
-	ETag string            `json:"etag"`
-	Apps map[string]string `json:"apps"`
+	ETag    string            `json:"etag"`
+	Apps    map[string]string `json:"apps"`
+	Domains map[string]string `json:"domains,omitempty"`
 }
 
 // loadCategories reads the copy saved by the last run, so the form machine
@@ -94,6 +104,7 @@ func (a *Agent) loadCategories() {
 	var s savedCategories
 	if json.Unmarshal(raw, &s) == nil && s.Apps != nil {
 		a.setCategories(CategorySet{ETag: s.ETag, Apps: s.Apps})
+		a.setDomainRules(nil, s.Domains)
 	}
 }
 
@@ -101,7 +112,7 @@ func (a *Agent) saveCategories(set CategorySet) {
 	if a.CategoriesFile == "" {
 		return
 	}
-	raw, _ := json.Marshal(savedCategories{ETag: set.ETag, Apps: set.Apps})
+	raw, _ := json.Marshal(savedCategories{ETag: set.ETag, Apps: set.Apps, Domains: set.DomainCategories})
 	tmp := a.CategoriesFile + ".tmp"
 	if err := os.WriteFile(tmp, raw, 0o600); err == nil {
 		_ = os.Rename(tmp, a.CategoriesFile)
@@ -129,6 +140,10 @@ func (a *Agent) RefreshCategories(ctx context.Context, api CategoryAPI) (bool, e
 		return false, err
 	}
 	a.setBlocklist(set.Blocklist)
+	a.setDomainRules(set.DomainBlocklist, set.DomainCategories)
+	if set.TegurEnabled != nil {
+		a.setTegurEnabled(*set.TegurEnabled)
+	}
 	if set.Apps == nil || set.ETag == etag {
 		return false, nil
 	}

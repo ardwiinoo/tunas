@@ -54,6 +54,8 @@ type Agent struct {
 	Titles    projects.TitleReader
 	// OnConn is called when the connection state changes (tray icon).
 	OnConn func(ConnState)
+	// OnNudge shows the distraction nudge (a question with two answers).
+	OnNudge func(text string)
 	// Version is reported in the heartbeat.
 	Version string
 	// RetryBase is the first retry delay of the event loop (default 5s).
@@ -64,7 +66,6 @@ type Agent struct {
 	OnWorklog func(e WorklogEvent)
 
 	machine *forms.Machine
-	streak  forms.Streak
 	last    forms.Output
 
 	mu        sync.Mutex // guards the fields below (set by event handling)
@@ -80,7 +81,9 @@ type Agent struct {
 	worklogKick chan struct{}
 	stats       statsState
 	cats        categoryState
+	nudge       nudgeState
 	proj        projectState
+	dom         domainState
 	lastIdle    time.Duration // idle time at the last sample
 	lastSync    time.Time     // last successful upload (tray status)
 }
@@ -95,13 +98,17 @@ type WorklogEvent struct {
 	Age      time.Duration
 }
 
+// NudgeConfig converts the YAML thresholds of the distraction nudge.
+func NudgeConfig(c config.AgentForms) forms.NudgeConfig {
+	m := time.Minute
+	return forms.NudgeConfig{After: time.Duration(c.DistractAfter()) * m, Gap: 2 * m,
+		Snooze: time.Duration(c.DistractSnoozeMinutes) * m, Cooldown: time.Duration(c.DistractCooldown()) * m, MaxPerDay: c.DistractMaxPerDay}
+}
+
 // FormsConfig converts YAML thresholds to forms.Config.
 func FormsConfig(c config.AgentForms) forms.Config {
 	m, s := time.Minute, time.Second
 	return forms.Config{
-		TegurAfter:     time.Duration(c.TegurAfterMinutes) * m,
-		TegurCooldown:  time.Duration(c.TegurCooldownMinutes) * m,
-		TegurFor:       time.Duration(c.TegurDisplaySeconds) * s,
 		TidurAfterIdle: time.Duration(c.TidurAfterIdleMinutes) * m,
 		SenangFor:      time.Duration(c.SenangSeconds) * s,
 		ReminderFor:    time.Duration(c.ReminderDisplaySeconds) * s,
@@ -170,7 +177,7 @@ func (a *Agent) SampleOnce(ctx context.Context, interval time.Duration) error {
 		return err
 	}
 	idle := s.Idle >= time.Duration(a.Cfg.IdleThresholdSeconds)*time.Second
-	cat := "other"
+	cat, key, host := "other", s.App, ""
 	a.mu.Lock()
 	a.lastIdle = s.Idle
 	a.mu.Unlock()
@@ -186,14 +193,23 @@ func (a *Agent) SampleOnce(ctx context.Context, interval time.Duration) error {
 		}
 		if !idle {
 			a.recordProject(ctx, now, s.App, act)
+			host = a.recordDomain(ctx, now, s.App, act)
 		}
 	}
-	streak := a.streak.Add(cat, idle, interval)
+	// the form and the nudge follow the website when the browser shows one that has a category
+	if host != "" {
+		if dc := a.domainCategory(host); dc != "" {
+			cat, key = dc, host
+		}
+	}
+	if !a.Paused() {
+		a.stepNudge(now, interval, cat, key, idle)
+	}
 
 	a.mu.Lock()
 	a.nextReminder(now)
 	sig := forms.Signals{
-		Now: now, Category: cat, Idle: s.Idle, DistractStreak: streak, Override: a.override,
+		Now: now, Category: cat, Idle: s.Idle, Override: a.override,
 		ReminderText: a.reminder, ReminderAt: a.remindAt, TaskDoneAt: a.doneAt,
 	}
 	a.mu.Unlock()
@@ -225,7 +241,10 @@ func (a *Agent) flush(ctx context.Context) (int, error) {
 	if err != nil {
 		return n, err
 	}
-	return n, a.flushProjects(ctx)
+	if err := a.flushProjects(ctx); err != nil {
+		return n, err
+	}
+	return n, a.flushDomains(ctx)
 }
 
 func (a *Agent) flushActivity(ctx context.Context) (int, error) {

@@ -45,9 +45,6 @@ func Valid(f Form) bool {
 
 // Config holds thresholds (from the agent YAML).
 type Config struct {
-	TegurAfter     time.Duration // distract streak before tegur (30m)
-	TegurCooldown  time.Duration // min time between tegur (45m)
-	TegurFor       time.Duration // how long tegur is shown
 	TidurAfterIdle time.Duration // idle before tidur (10m)
 	SenangFor      time.Duration // how long senang is shown (5s)
 	ReminderFor    time.Duration // how long ingat is shown
@@ -57,14 +54,13 @@ type Config struct {
 
 // Signals are the inputs at one instant.
 type Signals struct {
-	Now            time.Time
-	Category       string        // category of the foreground app
-	Idle           time.Duration // time since last input
-	ReminderText   string        // latest due reminder text
-	ReminderAt     time.Time     // when the reminder was received (zero = none)
-	TaskDoneAt     time.Time     // when a task was last completed (zero = none)
-	DistractStreak time.Duration // consecutive time in 'distract'
-	Override       Form          // manual override ("" = auto)
+	Now          time.Time
+	Category     string        // category of the foreground app
+	Idle         time.Duration // time since last input
+	ReminderText string        // latest due reminder text
+	ReminderAt   time.Time     // when the reminder was received (zero = none)
+	TaskDoneAt   time.Time     // when a task was last completed (zero = none)
+	Override     Form          // manual override ("" = auto)
 }
 
 // Output is what Tunas should show.
@@ -75,12 +71,11 @@ type Output struct {
 	Motion   bool          // trigger a random idle motion now (biasa only)
 }
 
-// Machine holds the little state the rules need (tegur cooldown, idle motion timer).
+// Machine holds the little state the rules need (the idle motion timer). The
+// distraction nudge (form tegur) is not a rule here: see Nudge.
 type Machine struct {
 	cfg        Config
 	rng        *rand.Rand
-	lastTegur  time.Time
-	tegurUntil time.Time
 	nextMotion time.Time
 }
 
@@ -104,14 +99,6 @@ func (m *Machine) Step(s Signals) Output {
 	if !s.TaskDoneAt.IsZero() && within(now, s.TaskDoneAt, m.cfg.SenangFor) {
 		return Output{Form: Senang, Speech: "Yeay, satu tugas beres! 🎉", Duration: remaining(now, s.TaskDoneAt, m.cfg.SenangFor)}
 	}
-	if now.Before(m.tegurUntil) {
-		return Output{Form: Tegur, Speech: tegurSpeech, Duration: m.tegurUntil.Sub(now)}
-	}
-	if s.DistractStreak >= m.cfg.TegurAfter && (m.lastTegur.IsZero() || now.Sub(m.lastTegur) >= m.cfg.TegurCooldown) {
-		m.lastTegur = now
-		m.tegurUntil = now.Add(m.cfg.TegurFor)
-		return Output{Form: Tegur, Speech: tegurSpeech, Duration: m.cfg.TegurFor}
-	}
 	if s.Idle >= m.cfg.TidurAfterIdle {
 		return Output{Form: Tidur, Speech: "Zzz..."}
 	}
@@ -128,8 +115,6 @@ func (m *Machine) Step(s Signals) Output {
 	return out
 }
 
-const tegurSpeech = "Sudah lama di hiburan, nih. Istirahat mata dulu, lalu lanjut?"
-
 func (m *Machine) scheduleMotion(now time.Time) {
 	span := m.cfg.IdleMotionMax - m.cfg.IdleMotionMin
 	d := m.cfg.IdleMotionMin
@@ -144,21 +129,3 @@ func within(now, at time.Time, d time.Duration) bool {
 }
 
 func remaining(now, at time.Time, d time.Duration) time.Duration { return at.Add(d).Sub(now) }
-
-// Streak tracks consecutive time in the distract category.
-type Streak struct {
-	d time.Duration
-}
-
-// Add records a sample of length dt. Any active non-distract sample resets the
-// streak; idle samples neither add nor reset.
-func (s *Streak) Add(category string, idle bool, dt time.Duration) time.Duration {
-	switch {
-	case idle:
-	case category == "distract":
-		s.d += dt
-	default:
-		s.d = 0
-	}
-	return s.d
-}

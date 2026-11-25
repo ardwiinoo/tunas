@@ -158,13 +158,15 @@ type ChatAPI interface {
 // Overlay is the on-screen character window and the tray icon.
 type Overlay struct {
 	// Set before Run.
-	CharacterOff bool         // tray only: overlay disabled in config.yaml
-	OnPause      func(bool)   // tray "Jeda pelacakan" toggled
-	OnProjects   func(bool)   // tray "Catat proyek editor" toggled
-	OnQuit       func()       // tray "Keluar"
-	LogPath      string       // tray "Buka log" ("" = disabled, e.g. --debug)
-	conn         atomic.Int32 // agent.ConnState, set from any goroutine
-	visible      atomic.Bool  // mirrors shown for State()
+	CharacterOff bool               // tray only: overlay disabled in config.yaml
+	OnPause      func(bool)         // tray "Jeda pelacakan" toggled
+	OnProjects   func(bool)         // tray "Catat proyek editor" toggled
+	OnDomains    func(bool)         // tray "Catat domain situs" toggled
+	OnTegur      func(working bool) // the owner answered the distraction nudge
+	OnQuit       func()             // tray "Keluar"
+	LogPath      string             // tray "Buka log" ("" = disabled, e.g. --debug)
+	conn         atomic.Int32       // agent.ConnState, set from any goroutine
+	visible      atomic.Bool        // mirrors shown for State()
 
 	cfg      config.AgentOverlay
 	log      *slog.Logger
@@ -209,6 +211,8 @@ type Overlay struct {
 	cal   *Calendar
 	calCh chan calResult
 
+	tegurCh chan string // distraction nudges waiting for the UI thread
+
 	// tray (UI thread)
 	paused     bool
 	trayIcon   uintptr
@@ -241,7 +245,7 @@ func New(cfg config.AgentOverlay, chat ChatAPI, log *slog.Logger) (*Overlay, err
 	return &Overlay{
 		cfg: cfg, log: log, chat: chat, renderer: Procedural{},
 		formCh: make(chan forms.Output, 8), replyCh: make(chan chatResult, 1),
-		wlCh: make(chan agent.WorklogEvent, 4), wlResCh: make(chan worklogResult, 1), calCh: make(chan calResult, 4),
+		wlCh: make(chan agent.WorklogEvent, 4), wlResCh: make(chan worklogResult, 1), calCh: make(chan calResult, 4), tegurCh: make(chan string, 2),
 		measure: Measurer(mf), scale: 1, visibleMs: visibleTick,
 	}, nil
 }
@@ -413,7 +417,7 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 		if o.cal != nil {
 			return 0 // the card is closed with Esc or the hotkey, not by a stray click
 		}
-		if o.p.FocusWorklog(now) { // a click answers the worklog bubble: keys work now
+		if o.p.FocusWorklog(now) || o.p.FocusTegur(now) { // a click answers the worklog or nudge bubble: keys work now
 			pSetForegroundWindow.Call(hwnd) //nolint:errcheck
 		} else {
 			o.p.Dismiss(now)
@@ -454,6 +458,13 @@ func (o *Overlay) onChar(u uint16, now time.Time) {
 			o.p.Paste(text, now)
 			o.sync(now)
 		}
+		return
+	}
+	if o.p.State == TegurAsk {
+		if ans := o.p.TegurKey(rune(u), now); ans != TegurNone && o.OnTegur != nil {
+			o.OnTegur(ans == TegurWorking)
+		}
+		o.sync(now)
 		return
 	}
 	if o.worklogChar(u, now) {
@@ -624,6 +635,7 @@ func (o *Overlay) tick(now time.Time) {
 	}
 	o.drainWorklog(now)
 	o.drainCalendar(now)
+	o.drainTegur(now)
 	o.trayTick()
 	o.p.Tick(now)
 	if o.p.KeysWanted() && !wasKeys { // a proposal, or the text box back after a failure
