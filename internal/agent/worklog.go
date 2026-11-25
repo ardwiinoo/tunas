@@ -65,7 +65,15 @@ type WriteResult struct {
 // it until the server confirms; resends use the same client_id.
 func (a *Agent) WriteWorklog(ctx context.Context, text string, promptID int64) (WriteResult, error) {
 	a.init()
-	it := WorklogItem{ClientID: newClientID(), Date: a.Now().Format(time.DateOnly), Text: text, PromptID: promptID, CreatedAt: a.Now()}
+	return a.WriteWorklogOn(ctx, a.Now().Format(time.DateOnly), text, promptID)
+}
+
+// WriteWorklogOn is WriteWorklog for a given day ("YYYY-MM-DD"), used by the
+// calendar's day panel. Several lines in text become several entries (the
+// server splits them like /log).
+func (a *Agent) WriteWorklogOn(ctx context.Context, date, text string, promptID int64) (WriteResult, error) {
+	a.init()
+	it := WorklogItem{ClientID: newClientID(), Date: date, Text: text, PromptID: promptID, CreatedAt: a.Now()}
 	if err := a.Buf.QueueWorklog(ctx, it); err != nil {
 		return WriteResult{}, err
 	}

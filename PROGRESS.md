@@ -360,3 +360,15 @@ Cabang `phase-8f-projects` (dari `phase-8b-apps`).
 Gerbang fase (lulus, termasuk `-race`): ekstraksi dengan judul sintetis (normal, `●`, extension host, tanpa folder, remote SSH/WSL, nama berkas di depan, tidak cocok pola, jalur, panjang, karakter kontrol, editor kedua); judul asli tidak pernah muncul di log (debug), seluruh isi database lokal, dan payload sinkron; pemindaian repo untuk API judul; alias (gabung lintas editor, berlaku mundur) dan blocklist (server menolak juga); saran selisih dan laporan dengan jam palsu; validasi API (jalur, panjang, huruf, detik, tanggal).
 Belum diuji langsung di Windows: pembacaan judul sungguhan, `--probe-title`, item tray, memori/CPU agen dengan pencatatan nyala.
 Menunggu pemilik **[PEMILIK]**: setel `window.title`, `--probe-title` untuk editor lain, nyalakan di tray; penerimaan di DEPLOY.md bagian 23.
+
+## Fase 8d: Perintah dan kalender di laptop
+Cabang `phase-8d-calendar` (dari `phase-8f-projects`).
+- [x] `POST /v1/agent/command` dengan daftar putih (`cal, log, today, tasks, done, status, form, apps, rekap, domain`); perintah lain ditolak dengan "Perintah itu belum ada di laptop, pakai Telegram."; `/status` tetap dijawab di laptop (angka lokal + ringkasan server).
+- [x] Endpoint kalender: `GET /v1/agent/worklog/month?m=`, `GET .../day?d=`, `PATCH` dan `DELETE .../entries/{id}`; aturan hari dihitung di server.
+- [x] Kartu kalender (item tray **Kalender worklog…** dan `/cal`): grid 7 kolom Senin-Minggu, penanda titik/cincin tanpa emoji, "N/M hari kerja terisi", nama hari libur saat dipilih; panel hari dengan daftar, kotak ketik (`Enter` tambah, `Ctrl+V` multi-baris), `E` ubah, `Del` hapus dengan konfirmasi.
+- [x] Papan ketik: panah, `PgUp`/`PgDn`, `T`, `Enter`, `Esc`; kartu tidak membuka sendiri.
+- [x] Offline: cache bulan/hari ("data lama"), tulisan lewat antrean worklog.
+
+Gerbang fase (lulus): tata letak (28/30/31 hari, mulai Senin, 4/5/6 baris, semua sel di dalam kartu dan di atas footer); navigasi lintas bulan dan tahun; penanda dan ringkasan sama dengan Telegram; panel hari (tambah, ubah, hapus dengan konfirmasi, tempel multi-baris, batas panjang); daftar putih perintah (tidak dikenal ditolak tanpa menyentuh pengendali); cache offline (bulan/hari, 5xx vs 4xx, batas, file rusak, restart); penggambaran ke kanvas memori; semua teks punya glyph; build Windows.
+Belum diukur: memori kartu terbuka dan tertutup di Windows asli, tampilan di layar.
+Menunggu pemilik **[PEMILIK]**: deploy dan penerimaan di DEPLOY.md bagian 24.
