@@ -1,8 +1,10 @@
 package overlay
 
 import (
+	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Worklog bubbles (PRD 8.4).
@@ -20,9 +22,11 @@ import (
 const (
 	TextWorklogAsk      = "Update worklog yuk, lagi ngerjain apa?"
 	HintWorklogIdle     = "klik atau Alt+Space untuk menjawab"
-	HintWorklogKeys     = "Enter = tulis · N = nanti · Esc = lewati hari ini"
+	HintWorklogKeys     = "Enter = tulis · N = nanti · S = senyapkan hari ini"
 	TextWorklogPrompt   = "Worklog hari ini:"
-	TextWorklogSaved    = "Tersimpan √" // Go Regular has no ✓ (U+2713); √ is in WGL4
+	TextWorklogMuted    = "Pengingat worklog disenyapkan untuk hari ini."
+	TextWorklogTick     = "√" // Go Regular has no ✓ (U+2713); √ is in WGL4
+	TextWorklogSaved    = "Tersimpan √"
 	TextWorklogQueued   = "Tersimpan √ (menunggu sinkron)"
 	WorklogAskFor       = 5 * time.Minute // unanswered: hide (Telegram still has it)
 	logPrefix           = "/log "
@@ -34,8 +38,8 @@ type WorklogAction int
 
 const (
 	WorklogNone WorklogAction = iota
-	WorklogLater
-	WorklogSkip
+	WorklogSkip               // N or Esc: skip this slot only; the next slot still reminds
+	WorklogMute               // S: no more reminders today
 )
 
 // WorklogDue shows the reminder bubble without taking focus. It only
@@ -77,12 +81,12 @@ func (p *Presenter) WorklogKey(r rune, now time.Time) (WorklogAction, int64) {
 	switch r {
 	case '\r':
 		p.OpenWorklog(id, now)
-	case 'n', 'N':
-		p.next(now)
-		return WorklogLater, id
-	case 0x1B:
+	case 'n', 'N', 0x1B:
 		p.next(now)
 		return WorklogSkip, id
+	case 's', 'S':
+		p.next(now)
+		return WorklogMute, id
 	}
 	return WorklogNone, 0
 }
@@ -125,7 +129,65 @@ func (p *Presenter) SubmitWorklog(now time.Time) (string, int64) {
 // to the worklog, no LLM).
 func IsLogCommand(s string) bool {
 	s = strings.TrimSpace(s)
-	return len(s) > len(logPrefix)-1 && strings.EqualFold(s[:len(logPrefix)-1], "/log") && (s[len(logPrefix)-1] == ' ')
+	n := len(logPrefix) - 1 // "/log"
+	return len(s) > n && strings.EqualFold(s[:n], "/log") && (s[n] == ' ' || s[n] == '\n')
+}
+
+// MaxPasteLen bounds a pasted worklog (runes); a paste holds up to 50 entries.
+const MaxPasteLen = 8000
+
+// multiLine reports whether the open text box takes a multi-line paste: the
+// worklog box and a chat draft that is a "/log" command.
+func (p *Presenter) multiLine() bool {
+	return p.State == WorklogInput || (p.State == Input && IsLogCommand(p.Draft+"x"))
+}
+
+// draftCap is the draft limit in runes for the open text box.
+func (p *Presenter) draftCap() int {
+	if p.multiLine() {
+		return MaxPasteLen
+	}
+	return MaxDraftLen
+}
+
+// Paste inserts clipboard text (Ctrl+V). The worklog box and a "/log" draft
+// keep the line breaks (one line = one entry); anything else becomes one
+// line.
+func (p *Presenter) Paste(text string, now time.Time) {
+	if !p.Typing() {
+		return
+	}
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	if !p.multiLine() {
+		text = strings.Join(strings.Fields(text), " ")
+	}
+	var b strings.Builder
+	for _, r := range text {
+		if r == '\n' || r >= 0x20 && r != 0x7f {
+			b.WriteRune(r)
+		}
+	}
+	p.stopSpeaking()
+	p.revealAll = true
+	p.typedAt, p.scrollUp = now, 0
+	room := p.draftCap() - utf8.RuneCountInString(p.Draft)
+	if room <= 0 {
+		return
+	}
+	add := []rune(b.String())
+	if len(add) > room {
+		add = add[:room]
+	}
+	p.Draft += string(add)
+}
+
+// WorklogCount is how many entries the last submitted worklog holds.
+func (p *Presenter) WorklogCount() int { return p.wlCount }
+
+// BeginWorklogSave moves to the saving state for a paste of n entries (the
+// clipboard path, which does not go through SubmitWorklog).
+func (p *Presenter) BeginWorklogSave(n int, now time.Time) {
+	p.State, p.wlCount, p.confirmID, p.since = WorklogSaving, n, "", now
 }
 
 // WorklogSaved shows the outcome with a small hop.
@@ -134,12 +196,15 @@ func (p *Presenter) WorklogSaved(synced bool, reject string, now time.Time) {
 		return
 	}
 	text := TextWorklogSaved
+	if p.wlCount > 1 {
+		text = fmt.Sprintf("%d catatan tersimpan %s", p.wlCount, TextWorklogTick)
+	}
 	switch {
 	case reject != "":
 		p.fail("worklog ditolak: "+reject, now)
 		return
 	case !synced:
-		text = TextWorklogQueued
+		text += " (menunggu sinkron)"
 	}
 	p.show(bubble{text: text, kind: kindReply, d: worklogSavedShowFor}, now)
 	p.hopAt = now

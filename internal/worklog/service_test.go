@@ -60,7 +60,7 @@ func TestLogAndCalendar(t *testing.T) {
 	if r.Text != "✅ Tersimpan (1 catatan hari ini)" {
 		t.Fatalf("/log tes → %q", r.Text)
 	}
-	cmd(t, s, "log", "kemarin   rapat\nsprint")
+	cmd(t, s, "log", "kemarin   rapat   sprint")
 	if r := cmd(t, s, "log", "2026-11-19 besok"); !strings.Contains(r.Text, "belum terjadi") {
 		t.Fatalf("future date accepted: %q", r.Text)
 	}

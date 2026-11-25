@@ -10,7 +10,10 @@ import (
 	"github.com/ardwiinoo/tunas/internal/store/storetest"
 )
 
-type fakeWorklog struct{ saved map[string]int }
+type fakeWorklog struct {
+	saved map[string]int
+	muted int
+}
 
 func (f *fakeWorklog) Save(_ context.Context, date, text, clientID string, promptID int64) (WorklogSaved, error) {
 	if text == "" {
@@ -24,6 +27,8 @@ func (f *fakeWorklog) Today(context.Context) (WorklogToday, error) {
 	last := time.Date(2026, 11, 23, 3, 0, 0, 0, time.UTC)
 	return WorklogToday{Count: 2, LastAt: &last, IsWorkday: true}, nil
 }
+
+func (f *fakeWorklog) Mute(context.Context) error { f.muted++; return nil }
 
 func (f *fakeWorklog) Answer(_ context.Context, id int64, _ string) error {
 	if id == 99 {
@@ -62,8 +67,17 @@ func TestWorklogEndpoints(t *testing.T) {
 	if code, _ := h.do("POST", "/v1/agent/worklog/prompts/99/answer", h.token, map[string]string{"action": "skip"}); code != 409 {
 		t.Fatal("closed prompt → 409")
 	}
+	if code, _ := h.do("POST", "/v1/agent/worklog/prompts/5/answer", h.token, map[string]string{"action": "mute"}); code != 200 {
+		t.Fatal("mute is an answer")
+	}
 	if code, _ := h.do("POST", "/v1/agent/worklog/prompts/5/answer", h.token, map[string]string{"action": "hapus"}); code != 400 {
 		t.Fatal("bad action")
+	}
+	if code, _ := h.do("POST", "/v1/agent/worklog/mute", h.token, map[string]string{}); code != 200 {
+		t.Fatal("mute endpoint")
+	}
+	if code, _ := h.do("POST", "/v1/agent/worklog/mute", "", map[string]string{}); code != 401 {
+		t.Fatal("mute needs the device token")
 	}
 	if code, _ := h.do("POST", "/v1/agent/worklog", "", body); code != 401 {
 		t.Fatal("device token required")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -447,4 +448,126 @@ func (db *DB) AddWorklogFromAgent(ctx context.Context, date time.Time, text, cli
 		return markDirty(ctx, tx, date)
 	})
 	return e, count, duplicate, err
+}
+
+// --- multi-line paste (Phase 8a) --------------------------------------------
+
+// BatchItem is one entry of a paste.
+type BatchItem struct {
+	Date     time.Time // local date, midnight UTC
+	Text     string
+	ClientID string // "" for Telegram; the derived id (logbatch.DeriveID) for the agent
+}
+
+// BatchSaved is what AddWorklogBatch did.
+type BatchSaved struct {
+	Entries    []WorklogEntry // newly stored, in order
+	Duplicates int            // skipped: the client_id was stored before (a resend)
+}
+
+// AddWorklogBatch stores a whole paste in one transaction: all of it or
+// nothing. Entries with a known ClientID are skipped (idempotent resend).
+func (db *DB) AddWorklogBatch(ctx context.Context, items []BatchItem, source, batchID string) (BatchSaved, error) {
+	var out BatchSaved
+	err := pgx.BeginFunc(ctx, db.Pool, func(tx pgx.Tx) error {
+		// lock the affected days in a fixed order (no deadlocks between pastes)
+		days := map[string]bool{}
+		var keys []string
+		for _, it := range items {
+			if k := it.Date.Format(time.DateOnly); !days[k] {
+				days[k] = true
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('worklog:' || $1::text))`, k); err != nil {
+				return err
+			}
+		}
+		months := map[string]time.Time{}
+		for _, it := range items {
+			var e WorklogEntry
+			cid := any(nil)
+			if it.ClientID != "" {
+				cid = it.ClientID
+			}
+			err := scanWorklog(tx.QueryRow(ctx, `insert into worklog_entries(entry_date, position, text, source, client_id, batch_id)
+				values ($1, (select coalesce(max(position), -1) + 1 from worklog_entries where entry_date = $1), $2, $3, $4, nullif($5, ''))
+				on conflict (client_id) do nothing returning `+worklogCols, it.Date, it.Text, source, cid, batchID), &e)
+			if errors.Is(err, pgx.ErrNoRows) {
+				out.Duplicates++
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			out.Entries = append(out.Entries, e)
+			months[it.Date.Format("2006-01")] = it.Date
+		}
+		for _, d := range months {
+			if err := markDirty(ctx, tx, d); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return BatchSaved{}, err
+	}
+	return out, nil
+}
+
+// DeleteWorklogBatch removes exactly the entries stored with batchID (the
+// "Batalkan semua" of one paste) and returns how many.
+func (db *DB) DeleteWorklogBatch(ctx context.Context, batchID string) (int, error) {
+	n := 0
+	err := pgx.BeginFunc(ctx, db.Pool, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `delete from worklog_entries where batch_id = $1 returning entry_date`, batchID)
+		if err != nil {
+			return err
+		}
+		months := map[string]time.Time{}
+		for rows.Next() {
+			var d time.Time
+			if err := rows.Scan(&d); err != nil {
+				return err
+			}
+			months[d.Format("2006-01")] = d
+			n++
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, d := range months {
+			if err := markDirty(ctx, tx, d); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return n, err
+}
+
+// SaveBatchPreview keeps a parsed paste until the owner answers Simpan/Batal.
+func (db *DB) SaveBatchPreview(ctx context.Context, id string, payload any, expires time.Time) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = db.Pool.Exec(ctx, `insert into worklog_batches(id, payload, expires_at) values ($1, $2, $3)
+		on conflict (id) do update set payload = excluded.payload, expires_at = excluded.expires_at`, id, raw, expires)
+	return err
+}
+
+// TakeBatchPreview removes and returns a preview (ok=false when unknown or
+// expired). Expired previews are also cleaned up here.
+func (db *DB) TakeBatchPreview(ctx context.Context, id string, now time.Time) (payload []byte, ok bool, err error) {
+	_, _ = db.Pool.Exec(ctx, `delete from worklog_batches where expires_at < $1`, now)
+	err = db.Pool.QueryRow(ctx, `delete from worklog_batches where id = $1 and expires_at >= $2 returning payload`, id, now).Scan(&payload)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, nil
+	}
+	return payload, err == nil, err
 }

@@ -14,14 +14,18 @@ type Worklog interface {
 	// problem is a *WorklogInputError.
 	Save(ctx context.Context, date, text, clientID string, promptID int64) (WorklogSaved, error)
 	Today(ctx context.Context) (WorklogToday, error)
-	// Answer applies "later" or "skip"; ErrPromptClosed when already closed.
+	// Answer applies "skip" (this slot only; "later" is the same) or "mute"
+	// (no more reminders today); ErrPromptClosed when already closed.
 	Answer(ctx context.Context, promptID int64, action string) error
+	// Mute switches today's reminders off (the tray's "Senyapkan hari ini").
+	Mute(ctx context.Context) error
 }
 
 // WorklogSaved is the reply of POST /v1/agent/worklog.
 type WorklogSaved struct {
 	ID        int64 `json:"id"`
-	Count     int   `json:"count"`
+	Count     int   `json:"count"`   // entries on the paste's first day now
+	Entries   int   `json:"entries"` // entries newly stored by this call (a paste can hold many)
 	Duplicate bool  `json:"duplicate"`
 }
 
@@ -47,6 +51,7 @@ func (s *Server) registerWorklogRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /v1/agent/worklog", s.auth(s.postWorklog))
 	mux.Handle("GET /v1/agent/worklog/today", s.auth(s.getWorklogToday))
 	mux.Handle("POST /v1/agent/worklog/prompts/{id}/answer", s.auth(s.postPromptAnswer))
+	mux.Handle("POST /v1/agent/worklog/mute", s.auth(s.postWorklogMute))
 }
 
 func (s *Server) postWorklog(w http.ResponseWriter, r *http.Request) {
@@ -99,8 +104,8 @@ func (s *Server) postPromptAnswer(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.Action != "later" && req.Action != "skip" {
-		writeError(w, http.StatusBadRequest, "action must be later or skip")
+	if req.Action != "later" && req.Action != "skip" && req.Action != "mute" {
+		writeError(w, http.StatusBadRequest, "action must be skip or mute")
 		return
 	}
 	switch err := s.worklog.Answer(r.Context(), id, req.Action); {
@@ -112,4 +117,13 @@ func (s *Server) postPromptAnswer(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
+}
+
+func (s *Server) postWorklogMute(w http.ResponseWriter, r *http.Request) {
+	if err := s.worklog.Mute(r.Context()); err != nil {
+		s.log.Error("worklog mute failed", "err", err)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

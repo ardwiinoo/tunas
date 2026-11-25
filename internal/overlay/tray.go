@@ -81,6 +81,8 @@ const (
 	CmdPause
 	CmdWorklogBubbles
 	CmdWriteWorklog
+	CmdClipboard
+	CmdMuteWorklog
 	CmdCharacter
 	CmdLog
 	CmdConfigDir
@@ -131,6 +133,8 @@ func TrayMenu(i MenuInfo) []MenuItem {
 		MenuItem{ID: CmdPause, Text: MenuPause, Checked: i.Paused},
 		MenuItem{ID: CmdWorklogBubbles, Text: "Pengingat worklog di layar", Checked: i.WorklogBubbles},
 		MenuItem{ID: CmdWriteWorklog, Text: "Tulis worklog…"},
+		MenuItem{ID: CmdClipboard, Text: "Tulis worklog dari clipboard"},
+		MenuItem{ID: CmdMuteWorklog, Text: "Senyapkan worklog hari ini"},
 		MenuItem{ID: CmdCharacter, Text: char},
 		MenuItem{Sep: true},
 		MenuItem{ID: CmdLog, Text: MenuLog, Grayed: !i.HasLog},

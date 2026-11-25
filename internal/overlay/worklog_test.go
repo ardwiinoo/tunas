@@ -27,14 +27,19 @@ func TestWorklogBubble(t *testing.T) {
 	if !p.KeysWanted() || !strings.HasSuffix(p.BubbleText(), HintWorklogKeys) {
 		t.Fatal("focused: Enter/N/Esc")
 	}
-	if a, id := p.WorklogKey('N', clk.now); a != WorklogLater || id != 12 || p.State != Idle {
-		t.Fatalf("N = later: %v %d %s", a, id, p.State)
+	if a, id := p.WorklogKey('N', clk.now); a != WorklogSkip || id != 12 || p.State != Idle {
+		t.Fatalf("N = Lewati this slot: %v %d %s", a, id, p.State)
 	}
 
 	p.WorklogDue(13, clk.now)
 	p.FocusWorklog(clk.now) // a click
 	if a, id := p.WorklogKey(0x1B, clk.now); a != WorklogSkip || id != 13 {
-		t.Fatal("Esc = skip today")
+		t.Fatal("Esc = Lewati this slot (not the whole day)")
+	}
+	p.WorklogDue(15, clk.now)
+	p.FocusWorklog(clk.now)
+	if a, id := p.WorklogKey('s', clk.now); a != WorklogMute || id != 15 || p.State != Idle {
+		t.Fatalf("S = Senyapkan hari ini: %v %d %s", a, id, p.State)
 	}
 
 	// Enter → write → saved ✓ with a hop

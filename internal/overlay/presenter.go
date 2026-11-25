@@ -128,6 +128,7 @@ type Presenter struct {
 	confirmQ  string // Confirm: the interpretation shown to the owner
 
 	wlPrompt  int64     // WorklogAsk/WorklogInput: the reminder being answered (0 = none)
+	wlCount   int       // entries in the worklog being saved
 	wlFocused bool      // WorklogAsk: clicked or Alt+Space, the keys work
 	hopAt     time.Time // a small hop after "Tersimpan ✓"
 }
@@ -637,7 +638,7 @@ func (p *Presenter) Type(rs []rune, now time.Time) {
 		if r < 0x20 || r == 0x7f {
 			continue
 		}
-		if utf8.RuneCountInString(p.Draft) >= MaxDraftLen {
+		if utf8.RuneCountInString(p.Draft) >= p.draftCap() {
 			return
 		}
 		p.Draft += string(r)

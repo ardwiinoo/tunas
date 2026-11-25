@@ -96,7 +96,9 @@ func TestFixedTextsHaveGlyphs(t *testing.T) {
 	texts := []string{Cursor, "› ", "…", "↑", "↓", ConfirmHint, CancelHint, TextCancelled,
 		TextWorklogAsk, HintWorklogIdle, HintWorklogKeys, TextWorklogPrompt, TextWorklogSaved, TextWorklogQueued,
 		"menyimpan...", "Mau aku jalan otomatis saat laptop nyala?", "Oke, aku akan jalan otomatis saat laptop nyala.",
-		"Oke, nanti saja. Bisa dinyalakan dari menu tray.", "worklog ditolak: x"}
+		"Oke, nanti saja. Bisa dinyalakan dari menu tray.", "worklog ditolak: x", TextWorklogMuted,
+		"Clipboard-nya kosong (tidak ada teks).", "Simpan 1 catatan dari clipboard?", "Simpan 8 catatan: 24 Nov (5), 25 Nov (3)?",
+		"8 catatan tersimpan √ (menunggu sinkron)", "Gagal: baris 3: tanggal 2026-11-26 belum terjadi"}
 	ms, err := modes.Load()
 	if err != nil {
 		t.Fatal(err)

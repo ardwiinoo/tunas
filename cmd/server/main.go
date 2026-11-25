@@ -467,7 +467,7 @@ func (w worklogAPI) Save(ctx context.Context, date, text, clientID string, promp
 	if err != nil {
 		return api.WorklogSaved{}, err
 	}
-	return api.WorklogSaved{ID: r.ID, Count: r.Count, Duplicate: r.Duplicate}, nil
+	return api.WorklogSaved{ID: r.ID, Count: r.Count, Entries: r.Entries, Duplicate: r.Duplicate}, nil
 }
 
 func (w worklogAPI) Today(ctx context.Context) (api.WorklogToday, error) {
@@ -477,6 +477,11 @@ func (w worklogAPI) Today(ctx context.Context) (api.WorklogToday, error) {
 		out.LastAt = &last
 	}
 	return out, err
+}
+
+func (w worklogAPI) Mute(ctx context.Context) error {
+	_, err := w.rem.Mute(ctx, "agent")
+	return err
 }
 
 func (w worklogAPI) Answer(ctx context.Context, promptID int64, action string) error {

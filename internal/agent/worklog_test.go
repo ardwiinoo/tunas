@@ -45,6 +45,7 @@ func (w worklogAPI) Save(ctx context.Context, date, text, clientID string, promp
 }
 func (w worklogAPI) Today(context.Context) (api.WorklogToday, error) { return api.WorklogToday{}, nil }
 func (w worklogAPI) Answer(context.Context, int64, string) error     { return nil }
+func (w worklogAPI) Mute(context.Context) error                      { return nil }
 
 func worklogRig(t *testing.T) (*Agent, *switchAPI, *store.DB) {
 	db := storetest.New(t)
@@ -152,5 +153,35 @@ func TestWorklogLoopResendsOnReconnect(t *testing.T) {
 	}
 	if a.QueuedWorklog(ctx) != 0 || len(rowsToday(t, db)) != 1 {
 		t.Fatal("queue not sent after reconnect")
+	}
+}
+
+// A multi-line paste written offline is one queue item; resent any number of
+// times it still yields exactly its three entries.
+func TestWorklogPasteOfflineResendIsIdempotent(t *testing.T) {
+	a, sw, db := worklogRig(t)
+	ctx := context.Background()
+	sw.offline.Store(true)
+	res, err := a.WriteWorklog(ctx, "- rapat\n- review\n- deploy", 0)
+	if err != nil || !res.Queued {
+		t.Fatalf("offline paste = %+v %v", res, err)
+	}
+	if a.QueuedWorklog(ctx) != 1 {
+		t.Fatal("one paste = one queue item")
+	}
+	sw.offline.Store(false)
+	items, _ := a.Buf.PendingWorklog(ctx)
+	if n, err := a.FlushWorklog(ctx); n != 1 || err != nil {
+		t.Fatalf("flush: %d %v", n, err)
+	}
+	for i := range 2 { // the confirmation was lost: the same item arrives again
+		saved, err := sw.Client.PostWorklog(ctx, items[0])
+		if err != nil || !saved.Duplicate || saved.Entries != 0 {
+			t.Fatalf("resend %d: %+v %v", i+1, saved, err)
+		}
+	}
+	rows := rowsToday(t, db)
+	if len(rows) != 3 || rows[0].Text != "rapat" || rows[2].Text != "deploy" {
+		t.Fatalf("rows = %+v", rows)
 	}
 }

@@ -2,6 +2,8 @@ package worklog
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/ardwiinoo/tunas/internal/bot"
 	"github.com/ardwiinoo/tunas/internal/llm"
+	"github.com/ardwiinoo/tunas/internal/logbatch"
 	"github.com/ardwiinoo/tunas/internal/store"
 )
 
@@ -105,7 +108,10 @@ func (s *Service) Command(ctx context.Context, cmd, args string) (bot.Reply, boo
 	return bot.Reply{}, false
 }
 
-const logUsage = "Pakai: /log [kemarin|YYYY-MM-DD] <teks>\nContoh: /log rapat sprint dan review PR\n/log kemarin perbaiki bug login"
+const logUsage = "Pakai: /log [kemarin|YYYY-MM-DD] <teks>\nContoh: /log rapat sprint dan review PR\n/log kemarin perbaiki bug login\n\n" +
+	"Boleh tempel beberapa baris: tiap baris satu catatan (awalan - * • 1. dibuang). " +
+	"Baris yang hanya berisi tanggal (2026-11-24, kemarin, hari ini) menetapkan tanggal baris di bawahnya. " +
+	"Maks 50 catatan per pesan."
 
 // ValidateText normalizes an entry and checks its length.
 func ValidateText(raw string) (string, error) {
@@ -120,18 +126,120 @@ func ValidateText(raw string) (string, error) {
 }
 
 func (s *Service) cmdLog(ctx context.Context, args string) bot.Reply {
-	d, rest, err := ParseDateArg(args, s.Now(), s.Loc)
+	if strings.TrimSpace(args) == "" {
+		return bot.Reply{Text: logUsage}
+	}
+	return s.saveText(ctx, args, time.Time{}, 0)
+}
+
+// saveText parses a paste (one or many lines) and saves it, or shows a
+// preview first (PRD 8a): a single entry is saved at once; up to 10 entries
+// without a date marker too, with "Batalkan semua"; more, or any date
+// marker, waits for Simpan / Batal. Nothing is ever saved partly.
+func (s *Service) saveText(ctx context.Context, text string, def time.Time, promptID int64) bot.Reply {
+	b, err := logbatch.Parse(text, s.today(), def)
 	if err != nil {
 		return bot.Reply{Text: "❌ " + err.Error() + ". Worklog hanya untuk hari ini atau yang sudah lewat."}
 	}
-	if strings.TrimSpace(rest) == "" {
-		return bot.Reply{Text: logUsage}
+	return s.saveParsed(ctx, b, promptID)
+}
+
+func (s *Service) saveParsed(ctx context.Context, b logbatch.Batch, promptID int64) bot.Reply {
+	switch {
+	case len(b.Entries) == 1:
+		e := b.Entries[0]
+		return s.Save(ctx, e.Date, e.Text, "telegram", promptID)
+	case b.NeedsPreview():
+		return s.previewBatch(ctx, b)
 	}
-	text, err := ValidateText(rest)
+	return s.saveBatch(ctx, b, promptID)
+}
+
+// newBatchID is a short random id (callback_data must stay under 64 bytes).
+func newBatchID() string {
+	var raw [6]byte
+	_, _ = rand.Read(raw[:])
+	return hex.EncodeToString(raw[:])
+}
+
+type previewItem struct {
+	Date string `json:"date"`
+	Text string `json:"text"`
+}
+
+func dayLabel(d time.Time) string {
+	return fmt.Sprintf("%s %d %s", dayNames[d.Weekday()][:3], d.Day(), monthNames[d.Month()-1][:3])
+}
+
+func (s *Service) previewBatch(ctx context.Context, b logbatch.Batch) bot.Reply {
+	id := newBatchID()
+	items := make([]previewItem, len(b.Entries))
+	for i, e := range b.Entries {
+		items[i] = previewItem{Date: key(e.Date), Text: e.Text}
+	}
+	if err := s.DB.SaveBatchPreview(ctx, id, items, s.Now().Add(pendingTTL)); err != nil {
+		return errReply(s, "preview", err)
+	}
+	return bot.Reply{
+		Text: "📝 Pratinjau: " + b.Preview(dayLabel) + "\nSimpan semuanya?",
+		Rows: [][]bot.Button{{
+			{Text: "✅ Simpan", Data: "wbs:" + id},
+			{Text: "Batal", Data: "wbx:" + id},
+		}},
+	}
+}
+
+// saveBatch stores a parsed paste in one go and answers with "Batalkan semua".
+func (s *Service) saveBatch(ctx context.Context, b logbatch.Batch, promptID int64) bot.Reply {
+	items := make([]store.BatchItem, len(b.Entries))
+	for i, e := range b.Entries {
+		items[i] = store.BatchItem{Date: e.Date, Text: e.Text}
+	}
+	return s.storeBatch(ctx, items, promptID)
+}
+
+func (s *Service) storeBatch(ctx context.Context, items []store.BatchItem, promptID int64) bot.Reply {
+	id := newBatchID()
+	saved, err := s.DB.AddWorklogBatch(ctx, items, "telegram", id)
 	if err != nil {
-		return bot.Reply{Text: "❌ " + err.Error() + "."}
+		return errReply(s, "batch", err)
 	}
-	return s.Save(ctx, d, text, "telegram", 0)
+	s.notifySaved(ctx, saved.Entries, "telegram", promptID)
+	text := fmt.Sprintf("✅ %d catatan tersimpan", len(saved.Entries))
+	first := items[0].Date
+	if allSameDay(items) && !first.Equal(s.today()) {
+		text += " (" + DayTitle(first) + ")"
+	}
+	return bot.Reply{
+		Text: text,
+		Rows: [][]bot.Button{{
+			{Text: "↩️ Batalkan semua", Data: "unb:" + id},
+			{Text: "📅 Lihat harinya", Data: cbDay(first)},
+		}},
+	}
+}
+
+func allSameDay(items []store.BatchItem) bool {
+	for _, it := range items[1:] {
+		if !it.Date.Equal(items[0].Date) {
+			return false
+		}
+	}
+	return true
+}
+
+// notifySaved tells the reminders about a save: a paste with entries for
+// today closes today's open prompts (once).
+func (s *Service) notifySaved(ctx context.Context, es []store.WorklogEntry, via string, promptID int64) {
+	if s.OnSaved == nil {
+		return
+	}
+	for _, e := range es {
+		if e.Date.Equal(s.today()) {
+			s.OnSaved(ctx, e, via, promptID)
+			return
+		}
+	}
 }
 
 // Save stores an entry and returns the confirmation with Undo / Add more.
@@ -265,6 +373,22 @@ func (s *Service) Callback(ctx context.Context, data string) (bot.Reply, bool) {
 			return s.dayReply(ctx, d), true
 		}
 		return bot.Reply{Text: "Oke, dibatalkan."}, true
+	case "wbs": // Simpan a previewed paste
+		return s.confirmBatch(ctx, arg), true
+	case "wbx":
+		if _, _, err := s.DB.TakeBatchPreview(ctx, arg, s.Now()); err != nil {
+			return errReply(s, "preview", err), true
+		}
+		return bot.Reply{Text: "Oke, tidak disimpan."}, true
+	case "unb": // Batalkan semua: only the entries of that paste
+		n, err := s.DB.DeleteWorklogBatch(ctx, arg)
+		if err != nil {
+			return errReply(s, "undo batch", err), true
+		}
+		if n == 0 {
+			return bot.Reply{Text: "Catatan dari tempelan itu sudah tidak ada."}, true
+		}
+		return bot.Reply{Text: fmt.Sprintf("↩️ %d catatan dibatalkan.", n), Rows: [][]bot.Button{{{Text: "📅 Kalender", Data: "cal:now"}}}}, true
 	case "rek", "rai", "rxn":
 		return s.rekapCallback(ctx, verb, arg)
 	case "edt", "del", "dly", "und":
@@ -278,6 +402,30 @@ func (s *Service) Callback(ctx context.Context, data string) (bot.Reply, bool) {
 		return s.ExtraCallback(ctx, data)
 	}
 	return bot.Reply{}, false
+}
+
+// confirmBatch saves a previewed paste (Simpan).
+func (s *Service) confirmBatch(ctx context.Context, id string) bot.Reply {
+	raw, ok, err := s.DB.TakeBatchPreview(ctx, id, s.Now())
+	if err != nil {
+		return errReply(s, "preview", err)
+	}
+	if !ok {
+		return bot.Reply{Text: "Pratinjau ini sudah kedaluwarsa atau sudah dipakai. Kirim ulang tempelannya ya."}
+	}
+	var pv []previewItem
+	if err := json.Unmarshal(raw, &pv); err != nil || len(pv) == 0 {
+		return bot.Reply{Text: "Pratinjau rusak. Kirim ulang tempelannya ya."}
+	}
+	items := make([]store.BatchItem, len(pv))
+	for i, p := range pv {
+		d, err := time.Parse(time.DateOnly, p.Date)
+		if err != nil || d.After(s.today()) {
+			return bot.Reply{Text: "Pratinjau memuat tanggal yang tidak valid. Kirim ulang tempelannya ya."}
+		}
+		items[i] = store.BatchItem{Date: d, Text: p.Text}
+	}
+	return s.storeBatch(ctx, items, 0)
 }
 
 func (s *Service) entryAction(ctx context.Context, verb string, id int64) bot.Reply {
@@ -328,31 +476,39 @@ func (s *Service) PendingText(ctx context.Context, text string) (bot.Reply, bool
 	}
 	var p pendingPayload
 	_ = json.Unmarshal(raw, &p)
+	if kind == PendingEdit {
+		return s.finishEdit(ctx, p, text), true
+	}
+	def := s.today()
+	if kind == PendingAdd {
+		if d, err := time.Parse(time.DateOnly, p.Date); err == nil {
+			def = d
+		}
+	}
+	b, err := logbatch.Parse(text, s.today(), def)
+	if err != nil {
+		// keep waiting so the owner can just send it again
+		_ = s.DB.SetPending(ctx, s.ChatID, kind, p, s.Now().Add(pendingTTL))
+		return bot.Reply{Text: "❌ " + err.Error() + ". Kirim lagi ya."}, true
+	}
+	return s.saveParsed(ctx, b, p.PromptID), true
+}
+
+// finishEdit replaces one entry (an edit never splits into several).
+func (s *Service) finishEdit(ctx context.Context, p pendingPayload, text string) bot.Reply {
 	t, verr := ValidateText(text)
 	if verr != nil {
-		// keep waiting so the owner can just send a shorter text
-		_ = s.DB.SetPending(ctx, s.ChatID, kind, p, s.Now().Add(pendingTTL))
-		return bot.Reply{Text: "❌ " + verr.Error() + ". Kirim lagi ya."}, true
+		_ = s.DB.SetPending(ctx, s.ChatID, PendingEdit, p, s.Now().Add(pendingTTL))
+		return bot.Reply{Text: "❌ " + verr.Error() + ". Kirim lagi ya."}
 	}
-	switch kind {
-	case PendingEdit:
-		e, err := s.DB.UpdateWorklog(ctx, p.ID, t, s.Now())
-		if errors.Is(err, store.ErrNotFound) {
-			return bot.Reply{Text: "Catatan itu sudah tidak ada."}, true
-		}
-		if err != nil {
-			return errReply(s, "edit", err), true
-		}
-		return bot.Reply{Text: "✏️ Diubah.", Rows: [][]bot.Button{{{Text: "📅 Lihat harinya", Data: cbDay(e.Date)}}}}, true
-	case PendingAdd:
-		d, err := time.Parse(time.DateOnly, p.Date)
-		if err != nil {
-			d = s.today()
-		}
-		return s.Save(ctx, d, t, "telegram", 0), true
-	default: // PendingWrite: today, closes the reminder that asked
-		return s.Save(ctx, s.today(), t, "telegram", p.PromptID), true
+	e, err := s.DB.UpdateWorklog(ctx, p.ID, t, s.Now())
+	if errors.Is(err, store.ErrNotFound) {
+		return bot.Reply{Text: "Catatan itu sudah tidak ada."}
 	}
+	if err != nil {
+		return errReply(s, "edit", err)
+	}
+	return bot.Reply{Text: "✏️ Diubah.", Rows: [][]bot.Button{{{Text: "📅 Lihat harinya", Data: cbDay(e.Date)}}}}
 }
 
 // InputError is an entry the owner has to fix (empty, too long, bad date).
@@ -363,35 +519,51 @@ func (e *InputError) Error() string { return e.Reason }
 // AgentSaved is the result of SaveFromAgent.
 type AgentSaved struct {
 	ID        int64
-	Count     int  // entries on that day now
-	Duplicate bool // the same client_id was saved before (a resend)
+	Count     int  // entries on the first day of the paste now
+	Entries   int  // entries newly stored by this call
+	Duplicate bool // everything was stored before (a resend)
 }
 
-// SaveFromAgent stores an entry from the laptop (bubble or offline queue).
-// date "" = today; clientID makes resends harmless; promptID closes the
-// reminder that asked (and edits its Telegram message).
+// SaveFromAgent stores a paste from the laptop (bubble, clipboard or the
+// offline queue). date "" = today. The text follows the /log rules (one
+// entry per line, date markers); each entry gets a client_id derived from
+// the paste's clientID and its line index (UUID v5), so a resend - which the
+// offline queue does - never saves anything twice. promptID closes the
+// reminder that asked.
 func (s *Service) SaveFromAgent(ctx context.Context, date, text, clientID string, promptID int64) (AgentSaved, error) {
-	t, err := ValidateText(text)
+	def := s.today()
+	if date != "" {
+		d, err := time.Parse(time.DateOnly, date)
+		if err != nil {
+			return AgentSaved{}, &InputError{Reason: "tanggal harus YYYY-MM-DD"}
+		}
+		def = d
+	}
+	if def.After(s.today()) {
+		return AgentSaved{}, &InputError{Reason: "tanggal belum terjadi"}
+	}
+	b, err := logbatch.Parse(text, s.today(), def)
 	if err != nil {
 		return AgentSaved{}, &InputError{Reason: err.Error()}
 	}
-	d := s.today()
-	if date != "" {
-		if d, err = time.Parse(time.DateOnly, date); err != nil {
-			return AgentSaved{}, &InputError{Reason: "tanggal harus YYYY-MM-DD"}
-		}
+	items := make([]store.BatchItem, len(b.Entries))
+	for i, e := range b.Entries {
+		items[i] = store.BatchItem{Date: e.Date, Text: e.Text, ClientID: logbatch.DeriveID(clientID, i)}
 	}
-	if d.After(s.today()) {
-		return AgentSaved{}, &InputError{Reason: "tanggal belum terjadi"}
-	}
-	e, n, dup, err := s.DB.AddWorklogFromAgent(ctx, d, t, clientID)
+	saved, err := s.DB.AddWorklogBatch(ctx, items, "agent", "")
 	if err != nil {
 		return AgentSaved{}, err
 	}
-	if !dup && s.OnSaved != nil {
-		s.OnSaved(ctx, e, "agent", promptID)
+	s.notifySaved(ctx, saved.Entries, "agent", promptID)
+	_, n, err := s.DB.LastWorklogAt(ctx, items[0].Date)
+	if err != nil {
+		return AgentSaved{}, err
 	}
-	return AgentSaved{ID: e.ID, Count: n, Duplicate: dup}, nil
+	out := AgentSaved{Count: n, Entries: len(saved.Entries), Duplicate: len(saved.Entries) == 0 && saved.Duplicates > 0}
+	if len(saved.Entries) > 0 {
+		out.ID = saved.Entries[0].ID
+	}
+	return out, nil
 }
 
 // AgentToday is GET /v1/agent/worklog/today.
