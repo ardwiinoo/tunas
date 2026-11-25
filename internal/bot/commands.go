@@ -55,7 +55,8 @@ const helpText = `Halo, aku Tunas 🌱
 /libur [YYYY-MM-DD] — tandai libur (tanpa pengingat); /kerja [YYYY-MM-DD] — tandai hari kerja
 /worklog [on|off|jam 10:30,13:30,16:30|penutup 17:30|sync] — pengingat dan cadangan worklog
 /rekap [YYYY-MM] [ai] — rekap worklog bulanan
-/status — status agen laptop (online/offline, versi, event tertunda)
+/apps [hari|minggu] — aplikasi yang dipakai dan kategorinya (ketuk tombol untuk mengubah); /kategori <app> <kategori>
+/status — status agen, server, VPS, dan LLM (tombol: Segarkan/Agen/VPS/LLM/24 jam)
 /settings — pengaturan (mis. kabar laptop offline/online)
 /ping — cek hidup
 

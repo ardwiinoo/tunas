@@ -335,3 +335,15 @@ Biaya pemantauan (benchmark): sampel agen 19 µs / 1,4 KB, snapshot server 30 µ
 
 Belum diuji langsung: angka Private Bytes dan CPU nyata di Windows, item tray Status…, kartu di bubble, cron dan `host.json` di VPS asli.
 Menunggu pemilik **[PEMILIK]**: deploy, cron host-stats, `HOST_STATS_FILE` dan volume compose; penerimaan di DEPLOY.md bagian 21.
+
+## Fase 8b: Kategori aplikasi yang bisa diatur dari Telegram
+Cabang `phase-8b-apps` (dari `phase-8g-status`).
+- [x] Migrasi `0007_app_categories.sql`; pemetaan di server, YAML hanya seed (server mengisi bawaan; agen mengirim YAML sebagai seed tambahan).
+- [x] Agen menarik pemetaan lewat `GET /v1/agent/state` dengan etag tiap 60 detik, menyimpan salinan lokal (`categories.json`), dan memakainya untuk mesin form dan bucket.
+- [x] `/apps [hari|minggu]` dengan tombol Kerja/Browse/Hiburan/Lainnya, `?` untuk yang belum dikategorikan; `/kategori <app> <kategori>`.
+- [x] Kabar sekali per aplikasi baru ≥ 15 menit tanpa kategori; `/apps notif on|off`.
+- [x] Seed diperluas (editor, IDE JetBrains, terminal); nama IDE baru seperti Antigravity **tidak ditebak**.
+
+Gerbang fase (lulus, termasuk `-race`): tes pemetaan (huruf besar-kecil, aplikasi baru, berlaku mundur di ringkasan harian), etag state (peta dilewatkan bila etag sama, berubah bila isi berubah, tidak berubah bila hanya waktu ubah), seed tidak menimpa pilihan pemilik dan menolak masukan buruk, kabar sekali (ambang 15 menit, sekali per aplikasi, retry setelah kirim gagal, saklar), agen mengikuti perubahan etag dan salinan lokal.
+Belum diuji langsung: tombol di Telegram sungguhan dan nama proses IDE pemilik (harus diverifikasi lewat `/apps`).
+Menunggu pemilik **[PEMILIK]**: deploy dan penerimaan di DEPLOY.md bagian 22.

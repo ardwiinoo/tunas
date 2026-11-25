@@ -179,6 +179,34 @@ func (c *Agent) Validate() error {
 	return errors.Join(errs...)
 }
 
+// DefaultAppSeed is the starting app → category mapping the server stores
+// (lower-case names). It covers common editors and terminals; IDEs it does
+// not know show up as "?" in /apps and are categorized from Telegram. Names
+// of new IDEs are deliberately not guessed.
+func DefaultAppSeed() map[string]string {
+	out := map[string]string{}
+	for cat, apps := range DefaultAgent().AppCategories {
+		for _, a := range apps {
+			out[strings.ToLower(a)] = cat
+		}
+	}
+	for _, a := range []string{
+		"cursor.exe", "windsurf.exe", "code - insiders.exe", "sublime_text.exe", "notepad++.exe", "devenv.exe",
+		"rider64.exe", "webstorm64.exe", "pycharm64.exe", "goland64.exe", "clion64.exe", "datagrip64.exe", "studio64.exe",
+		"wt.exe", "powershell.exe", "pwsh.exe", "cmd.exe", "mintty.exe", "postman.exe", "dbeaver.exe", "tableplus.exe",
+		"githubdesktop.exe", "sourcetree.exe", "docker desktop.exe",
+	} {
+		out[a] = "work"
+	}
+	for _, a := range []string{"brave.exe", "opera.exe", "vivaldi.exe", "arc.exe"} {
+		out[a] = "browse"
+	}
+	for _, a := range []string{"discord.exe", "spotify.exe", "steam.exe", "vlc.exe"} {
+		out[a] = "distract"
+	}
+	return out
+}
+
 // CategoryOf maps an executable name to its category (case-insensitive), "other" if unmapped.
 func (c *Agent) CategoryOf(exe string) string {
 	for cat, apps := range c.AppCategories {
