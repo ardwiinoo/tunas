@@ -44,6 +44,13 @@ create table if not exists project_buckets (  -- project names only, never windo
   dirty integer not null default 1,
   primary key (bucket_start, project, editor)
 );
+create table if not exists domain_buckets (  -- hostnames only
+  bucket_start integer not null,
+  domain text not null,
+  active integer not null default 0,
+  dirty integer not null default 1,
+  primary key (bucket_start, domain)
+);
 create table if not exists kv (key text primary key, value text not null);
 create table if not exists worklog_queue (   -- worklog entries written on the laptop, until the server confirms
   client_id text primary key,                -- UUID: resending is harmless (server is idempotent)
@@ -268,4 +275,66 @@ func (b *Buffer) PruneProjects(ctx context.Context, cutoff time.Time) (int64, er
 func (b *Buffer) PurgeProjects(ctx context.Context) error {
 	_, err := b.db.ExecContext(ctx, `delete from project_buckets`)
 	return err
+}
+
+// AddDomain accumulates seconds into the minute bucket of a website.
+func (b *Buffer) AddDomain(ctx context.Context, minute time.Time, domain string, active int) error {
+	_, err := b.db.ExecContext(ctx, `
+		insert into domain_buckets(bucket_start, domain, active, dirty) values(?, ?, min(60, ?), 1)
+		on conflict(bucket_start, domain) do update set active = min(60, active + excluded.active), dirty = 1`,
+		minute.Truncate(time.Minute).Unix(), domain, active)
+	return err
+}
+
+// DomainBucket is one minute on one website (wire format).
+type DomainBucket struct {
+	Start         time.Time `json:"bucket_start"`
+	Domain        string    `json:"domain"`
+	ActiveSeconds int       `json:"active_seconds"`
+}
+
+// PendingDomains returns up to limit unsynced domain buckets, oldest first.
+func (b *Buffer) PendingDomains(ctx context.Context, limit int) ([]DomainBucket, error) {
+	rows, err := b.db.QueryContext(ctx,
+		`select bucket_start, domain, active from domain_buckets where dirty=1 order by bucket_start limit ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DomainBucket
+	for rows.Next() {
+		var d DomainBucket
+		var ts int64
+		if err := rows.Scan(&ts, &d.Domain, &d.ActiveSeconds); err != nil {
+			return nil, err
+		}
+		d.Start = time.Unix(ts, 0).UTC()
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// MarkDomainsSynced clears the dirty flag of buckets that did not change since they were read.
+func (b *Buffer) MarkDomainsSynced(ctx context.Context, bs []DomainBucket) error {
+	tx, err := b.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	for _, d := range bs {
+		if _, err := tx.ExecContext(ctx, `update domain_buckets set dirty=0 where bucket_start=? and domain=? and active=?`,
+			d.Start.Unix(), d.Domain, d.ActiveSeconds); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// PruneDomains deletes synced domain buckets older than cutoff.
+func (b *Buffer) PruneDomains(ctx context.Context, cutoff time.Time) (int64, error) {
+	res, err := b.db.ExecContext(ctx, `delete from domain_buckets where dirty=0 and bucket_start < ?`, cutoff.Unix())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }

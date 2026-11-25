@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -16,6 +18,10 @@ type UIState struct {
 	CharacterVisible bool `json:"character_visible"`
 	AutostartOffered bool `json:"autostart_offered"`
 	ProjectsEnabled  bool `json:"projects_enabled"` // "Catat proyek editor" (Fase 8f), off by default
+	DomainsEnabled   bool `json:"domains_enabled"`  // "Catat domain situs" (Fase 8c), off by default
+	// ExtensionToken authenticates the browser extension to the local bridge;
+	// made on first use, shown only by the tray item that copies it.
+	ExtensionToken string `json:"extension_token,omitempty"`
 }
 
 // DefaultUIState is used when there is no state.json yet.
@@ -98,4 +104,14 @@ func SetAutostart(r Registry, exe string, on bool) error {
 		return nil
 	}
 	return err
+}
+
+// NewExtensionToken makes the secret the browser extension presents to the
+// local bridge (32 random bytes, hex).
+func NewExtensionToken() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand: " + err.Error()) // cannot happen on a working system; never fall back to something guessable
+	}
+	return hex.EncodeToString(b)
 }

@@ -29,6 +29,20 @@ type Agent struct {
 	WorklogBubbleInFocus  bool                `yaml:"worklog_bubble_in_focus"` // worklog bubbles also in form fokus
 	Speech                AgentSpeech         `yaml:"speech"`
 	Projects              AgentProjects       `yaml:"projects"`
+	Extension             AgentExtension      `yaml:"extension"`
+}
+
+// DefaultExtensionID is the id of the extension in this repository's
+// extension/ folder (its manifest carries a fixed key, so the id does not
+// depend on where it is loaded from).
+const DefaultExtensionID = "icagoakbnkjjclfoabcpdbbdfimnojec"
+
+// AgentExtension configures the local bridge for the browser extension
+// (Fase 8c). The bridge only runs while "Catat domain situs" is on.
+type AgentExtension struct {
+	Port     int      `yaml:"port"`     // 127.0.0.1:<port>
+	IDs      []string `yaml:"ids"`      // extension ids allowed to call the bridge
+	Browsers []string `yaml:"browsers"` // processes whose active tab counts
 }
 
 // AgentProjects lists the editors whose window title may be read (in memory
@@ -67,7 +81,14 @@ type AgentForms struct {
 	IdleMotionMinMinutes   int `yaml:"idle_motion_min_minutes"`
 	IdleMotionMaxMinutes   int `yaml:"idle_motion_max_minutes"`
 	ReminderDisplaySeconds int `yaml:"reminder_display_seconds"`
-	TegurDisplaySeconds    int `yaml:"tegur_display_seconds"`
+	TegurDisplaySeconds    int `yaml:"tegur_display_seconds"` // unused since the nudge asks a question; kept so old files load
+
+	// The distraction nudge (Fase 8c). 0 for after/cooldown = use the old
+	// tegur_after_minutes / tegur_cooldown_minutes (an alias).
+	DistractAfterMinutes    int `yaml:"distract_after_minutes"`
+	DistractCooldownMinutes int `yaml:"distract_cooldown_minutes"`
+	DistractSnoozeMinutes   int `yaml:"distract_snooze_minutes"`
+	DistractMaxPerDay       int `yaml:"distract_max_per_day"`
 }
 
 // AgentOverlay configures the on-screen character (Phase 4).
@@ -104,6 +125,8 @@ func DefaultAgent() *Agent {
 			IdleMotionMaxMinutes:   7,
 			ReminderDisplaySeconds: 15,
 			TegurDisplaySeconds:    10,
+			DistractSnoozeMinutes:  90,
+			DistractMaxPerDay:      4,
 		},
 		Overlay:    AgentOverlay{Enabled: true, Corner: "bottom-right", MarginX: 24, MarginY: 24},
 		Loading:    AgentLoading{SlowAfterSeconds: 3, VerySlowAfterSeconds: 8},
@@ -111,6 +134,8 @@ func DefaultAgent() *Agent {
 		Bubble:     AgentBubble{IdleCloseSeconds: 60},
 		Speech:     AgentSpeech{MsPerChar: 40, MinSeconds: 2, MaxSeconds: 8},
 		Projects:   AgentProjects{Editors: projects.DefaultEditors()},
+		Extension: AgentExtension{Port: 47821, IDs: []string{DefaultExtensionID},
+			Browsers: []string{"chrome.exe", "msedge.exe", "brave.exe", "vivaldi.exe", "opera.exe"}},
 	}
 }
 
@@ -150,6 +175,14 @@ func (c *Agent) Validate() error {
 	if _, err := projects.NewExtractor(c.Projects.Editors); err != nil {
 		errs = append(errs, err)
 	}
+	if p := c.Extension.Port; p < 1024 || p > 65535 {
+		errs = append(errs, errors.New("extension.port must be 1024..65535"))
+	}
+	for _, id := range c.Extension.IDs {
+		if len(id) != 32 || strings.Trim(id, "abcdefghijklmnop") != "" {
+			errs = append(errs, errors.New("extension.ids: an id is 32 letters a-p"))
+		}
+	}
 	if c.StoreTitles {
 		errs = append(errs, errors.New("store_titles must be false: window titles are never collected"))
 	}
@@ -165,6 +198,13 @@ func (c *Agent) Validate() error {
 	pos("forms.tidur_after_idle_minutes", c.Forms.TidurAfterIdleMinutes)
 	pos("forms.senang_seconds", c.Forms.SenangSeconds)
 	pos("forms.idle_motion_min_minutes", c.Forms.IdleMotionMinMinutes)
+	for name, v := range map[string]int{"forms.distract_after_minutes": c.Forms.DistractAfterMinutes, "forms.distract_cooldown_minutes": c.Forms.DistractCooldownMinutes} {
+		if v < 0 {
+			errs = append(errs, fmt.Errorf("%s must be >= 0", name))
+		}
+	}
+	pos("forms.distract_snooze_minutes", c.Forms.DistractSnoozeMinutes)
+	pos("forms.distract_max_per_day", c.Forms.DistractMaxPerDay)
 	if c.Forms.TegurCooldownMinutes < 0 {
 		errs = append(errs, errors.New("forms.tegur_cooldown_minutes must be >= 0"))
 	}
@@ -231,4 +271,21 @@ func (c *Agent) CategoryOf(exe string) string {
 		}
 	}
 	return "other"
+}
+
+// DistractAfter is the distract time in a row before a nudge, in minutes
+// (distract_after_minutes, or the old tegur_after_minutes).
+func (f AgentForms) DistractAfter() int {
+	if f.DistractAfterMinutes > 0 {
+		return f.DistractAfterMinutes
+	}
+	return f.TegurAfterMinutes
+}
+
+// DistractCooldown is the time between two nudges, in minutes.
+func (f AgentForms) DistractCooldown() int {
+	if f.DistractCooldownMinutes > 0 {
+		return f.DistractCooldownMinutes
+	}
+	return f.TegurCooldownMinutes
 }

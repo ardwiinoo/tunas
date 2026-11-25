@@ -30,6 +30,7 @@ const (
 	WorklogAsk                 // a worklog reminder (no focus until clicked / Alt+Space)
 	WorklogInput               // the worklog text box
 	WorklogSaving              // sending the worklog entry
+	TegurAsk                   // the distraction nudge: a question with two answers (no focus until clicked / Alt+Space)
 )
 
 func (s State) String() string {
@@ -130,6 +131,8 @@ type Presenter struct {
 	wlPrompt  int64     // WorklogAsk/WorklogInput: the reminder being answered (0 = none)
 	wlCount   int       // entries in the worklog being saved
 	wlFocused bool      // WorklogAsk: clicked or Alt+Space, the keys work
+	tegurText string    // TegurAsk: the question
+	tegurKeys bool      // TegurAsk: clicked or Alt+Space, the keys work
 	hopAt     time.Time // a small hop after "Tersimpan ✓"
 }
 
@@ -243,7 +246,7 @@ func (p *Presenter) Waiting() bool {
 // a proposal (Enter/Esc), a pending request (Esc cancels) or an answer
 // still being typed out (Enter skips).
 func (p *Presenter) KeysWanted() bool {
-	return p.Typing() || p.State == Confirm || p.Waiting() || (p.State == WorklogAsk && p.wlFocused)
+	return p.Typing() || p.State == Confirm || p.Waiting() || (p.State == WorklogAsk && p.wlFocused) || (p.State == TegurAsk && p.tegurKeys)
 }
 
 // Req is the id of the newest request; results for other ids are stale.
@@ -600,6 +603,9 @@ func (p *Presenter) OnHotkey(now time.Time) {
 	case p.State == WorklogAsk:
 		p.FocusWorklog(now)
 		return
+	case p.State == TegurAsk:
+		p.FocusTegur(now)
+		return
 	case p.State == WorklogSaving:
 		return
 	case p.Typing():
@@ -707,6 +713,8 @@ func (p *Presenter) Tick(now time.Time) {
 	switch p.State {
 	case WorklogAsk, WorklogInput, WorklogSaving:
 		p.worklogTick(now)
+	case TegurAsk:
+		p.tegurTick(now)
 	case Input, Failed:
 		if now.Sub(p.typedAt) >= p.idleClose() {
 			p.CancelInput(now)
@@ -766,6 +774,8 @@ func (p *Presenter) BubbleText() string {
 		return p.cur.text
 	case WorklogAsk, WorklogInput, WorklogSaving:
 		return p.worklogText()
+	case TegurAsk:
+		return p.tegurBubble()
 	case Confirm:
 		return p.confirmQ + "\n" + ConfirmHint
 	}
@@ -804,6 +814,8 @@ func (p *Presenter) Look(now time.Time) Look {
 	switch p.State {
 	case WorklogAsk, WorklogInput:
 		return Look{Form: forms.Ingat, T: 10}
+	case TegurAsk:
+		return Look{Form: forms.Tegur, T: now.Sub(p.typedAt).Seconds()}
 	case Thinking, Slow, VerySlow:
 		return Look{Form: forms.Mikir, Phase: int(p.State - Thinking), T: now.Sub(p.since).Seconds()}
 	case Failed:

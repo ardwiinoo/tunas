@@ -13,6 +13,7 @@ import (
 
 	"github.com/ardwiinoo/tunas/internal/agentstats"
 	"github.com/ardwiinoo/tunas/internal/apps"
+	"github.com/ardwiinoo/tunas/internal/domains"
 	"github.com/ardwiinoo/tunas/internal/llm"
 	"github.com/ardwiinoo/tunas/internal/projects"
 	"github.com/ardwiinoo/tunas/internal/store"
@@ -28,6 +29,9 @@ const (
 
 // FormOverrideKey is the settings key for /form override (Phase 3).
 const FormOverrideKey = "form_override"
+
+// TegurEnabledKey is the setting behind /tegur on|off (default on).
+const TegurEnabledKey = "tegur.enabled"
 
 var validCategories = map[string]bool{"work": true, "browse": true, "distract": true, "other": true}
 
@@ -47,6 +51,7 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /v1/agent/heartbeat", s.auth(s.postHeartbeat))
 	mux.Handle("POST /v1/agent/categories/seed", s.auth(s.postSeedCategories))
 	mux.Handle("POST /v1/agent/projects", s.auth(s.postProjects))
+	mux.Handle("POST /v1/agent/domains", s.auth(s.postDomains))
 	if s.summary != nil {
 		mux.Handle("GET /v1/agent/status/summary", s.auth(s.getStatusSummary))
 	}
@@ -220,10 +225,37 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
-	etag := store.CategoriesETag(cats)
-	out := map[string]any{"form_override": override, "now": s.now(), "categories_etag": etag, "project_blocklist": blocklist}
-	if r.URL.Query().Get("categories_etag") != etag { // the agent already has this mapping otherwise
+	domCats, err := s.db.DomainCategories(r.Context())
+	if err != nil {
+		s.log.Error("get domain categories failed", "err", err)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	domBlock, err := s.db.DomainBlocklist(r.Context())
+	if err != nil {
+		s.log.Error("get domain blocklist failed", "err", err)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	var tegurOn = true
+	if _, err := s.db.GetSetting(r.Context(), TegurEnabledKey, &tegurOn); err != nil {
+		s.log.Error("get tegur setting failed", "err", err)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	merged := make(map[string]string, len(cats)+len(domCats))
+	for k, v := range cats {
+		merged["a:"+k] = v
+	}
+	for k, v := range domCats {
+		merged["d:"+k] = v
+	}
+	etag := store.CategoriesETag(merged)
+	out := map[string]any{"form_override": override, "now": s.now(), "categories_etag": etag,
+		"project_blocklist": blocklist, "domain_blocklist": domBlock, "tegur_enabled": tegurOn}
+	if r.URL.Query().Get("categories_etag") != etag { // the agent already has these mappings otherwise
 		out["app_categories"] = cats
+		out["domain_categories"] = domCats
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -476,4 +508,48 @@ func (s *Server) postConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"reply": s.confirm(r.Context(), req.ID, req.Yes)})
+}
+
+// ValidateDomainBuckets checks a domain upload: only a plain hostname that is
+// already normalized passes, so a path or a title cannot ride along.
+func ValidateDomainBuckets(bs []store.DomainBucket, now time.Time) error {
+	if len(bs) > maxBucketsPerBatch {
+		return errors.New("too many buckets")
+	}
+	for _, b := range bs {
+		host, ok := domains.Normalize(b.Domain)
+		switch {
+		case b.Start.IsZero() || !b.Start.Equal(b.Start.Truncate(time.Minute)):
+			return errors.New("bucket_start must be minute-aligned")
+		case b.Start.After(now.Add(5*time.Minute)) || b.Start.Before(now.Add(-maxBucketAge)):
+			return errors.New("bucket_start out of range")
+		case !ok || host != b.Domain:
+			return errors.New("invalid domain")
+		case b.ActiveSeconds < 0 || b.ActiveSeconds > 60:
+			return errors.New("invalid seconds")
+		}
+	}
+	return nil
+}
+
+// postDomains stores the agent's per-minute website time.
+func (s *Server) postDomains(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Buckets []store.DomainBucket `json:"buckets"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := ValidateDomainBuckets(req.Buckets, s.now()); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	d := deviceFrom(r.Context())
+	n, err := s.db.UpsertDomainBuckets(r.Context(), d.ID, req.Buckets)
+	if err != nil {
+		s.log.Error("upsert domain buckets failed", "err", err)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"accepted": n})
 }

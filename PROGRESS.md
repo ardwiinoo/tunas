@@ -372,3 +372,16 @@ Cabang `phase-8d-calendar` (dari `phase-8f-projects`).
 Gerbang fase (lulus): tata letak (28/30/31 hari, mulai Senin, 4/5/6 baris, semua sel di dalam kartu dan di atas footer); navigasi lintas bulan dan tahun; penanda dan ringkasan sama dengan Telegram; panel hari (tambah, ubah, hapus dengan konfirmasi, tempel multi-baris, batas panjang); daftar putih perintah (tidak dikenal ditolak tanpa menyentuh pengendali); cache offline (bulan/hari, 5xx vs 4xx, batas, file rusak, restart); penggambaran ke kanvas memori; semua teks punya glyph; build Windows.
 Belum diukur: memori kartu terbuka dan tertutup di Windows asli, tampilan di layar.
 Menunggu pemilik **[PEMILIK]**: deploy dan penerimaan di DEPLOY.md bagian 24.
+
+## Fase 8c: Domain situs dan teguran saat kelamaan (opt-in)
+Cabang `phase-8c-domains` (dari `phase-8d-calendar`).
+- [x] `internal/domains`: normalisasi hostname (tes tabel + fuzz + tes JS yang sama), cocok per akhiran.
+- [x] Jembatan lokal `internal/bridge` (loopback, Host, Origin persis, token, badan ≤ 1 KB, CORS tepat) yang hanya jalan saat "Catat domain situs" menyala.
+- [x] Ekstensi MV3 di `extension/` (izin `tabs` dan `storage`, tanpa penyamaran, kirim `{host, ts}`), ID tetap, halaman opsi dengan tes koneksi.
+- [x] Agen: agregasi per menit ke `domain_buckets` lokal, hanya browser dikenal dan pemilik tidak idle/dijeda, sinyal basi dibuang, sinkron idempoten; item tray **Catat domain situs** dan **Salin token ekstensi browser**.
+- [x] Server: migrasi `0009_domains.sql`, `POST /v1/agent/domains` (hostname saja), kategori awal, `/domain` (daftar, kategori, blok, buka, hapus), situs baru ≥ 15 menit ditanyakan sekali, `/today` memuat 5 situs, `/tanya top_domains`, ringkasan harian ikut (ke LLM hanya bila `domain_llm`).
+- [x] Teguran: `forms.Nudge` (ambang, jeda, snooze, cooldown, batas harian), bubble dua pilihan, `/tegur on|off`, alias konfigurasi lama.
+
+Gerbang fase (lulus): validasi hostname dan fuzz (path, query, fragmen, kredensial, IDN, IP, localhost); keamanan jembatan (non-loopback, Origin palsu atau kosong, token salah, badan besar, Host salah, preflight tepat); agregasi dengan jam palsu (sinyal basi, fokus browser, blocklist termasuk subdomain, idle, jeda); teguran (ambang, jeda < 2 menit, snooze, cooldown, batas harian, mati, tidur, aplikasi dan situs, jeda pelacakan); tes manifest (izin, ID, tanpa penyamaran) dan sumber ekstensi; semua teks bubble punya glyph.
+Belum diuji langsung: ekstensi di browser, bubble teguran di layar, memori agen dengan jembatan nyala.
+Menunggu pemilik **[PEMILIK]**: pasang ekstensi dan nyalakan di tray; penerimaan di DEPLOY.md bagian 25.

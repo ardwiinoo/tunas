@@ -74,13 +74,24 @@ func (a *Assistant) DailySummary(ctx context.Context) (string, bool, error) {
 	}
 	title := "🌙 Ringkasan " + reminders.FormatDate(now, now, a.Loc)
 	facts := activity.FormatToday(s, title, a.Loc)
+	domSec := a.domainSection(ctx, from, to)
+	if domSec != "" && a.includeDomains(ctx) {
+		facts += "\n\n" + domSec // allowed to reach the LLM
+	}
 	text := a.phrase(ctx, a.ActiveForm(ctx),
 		"Tulis ringkasan harian yang hangat dan singkat (maks 4 kalimat) dari FAKTA aktivitas laptop hari ini. Sebut total waktu aktif dan aplikasi teratas.",
 		facts)
-	if text == facts {
+	if text == facts { // the LLM was not used (or its answer was rejected): the facts as they are
+		if domSec != "" && !a.includeDomains(ctx) {
+			facts += "\n\n" + domSec
+		}
 		return facts, true, nil
 	}
-	return title + "\n" + strings.TrimSpace(text), true, nil
+	out := title + "\n" + strings.TrimSpace(text)
+	if domSec != "" && !a.includeDomains(ctx) {
+		out += "\n\n" + domSec // added by code after the LLM, so site names never reached it
+	}
+	return out, true, nil
 }
 
 // RunDaily checks every minute until ctx is done.

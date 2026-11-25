@@ -24,6 +24,8 @@ type Overlay struct {
 	CharacterOff bool
 	OnPause      func(bool)
 	OnProjects   func(bool)
+	OnDomains    func(bool)
+	OnTegur      func(working bool)
 	OnQuit       func()
 	LogPath      string
 }
@@ -39,6 +41,9 @@ func (*Overlay) SetIdleClose(time.Duration) {}
 
 // State is always "off" here.
 func (*Overlay) State() string { return "off" }
+
+// Nudge does nothing.
+func (*Overlay) Nudge(string) {}
 
 // SetConn does nothing.
 func (*Overlay) SetConn(agent.ConnState) {}

@@ -30,6 +30,7 @@ import (
 	"github.com/ardwiinoo/tunas/internal/assist"
 	"github.com/ardwiinoo/tunas/internal/bot"
 	"github.com/ardwiinoo/tunas/internal/config"
+	"github.com/ardwiinoo/tunas/internal/domaincmd"
 	"github.com/ardwiinoo/tunas/internal/eod"
 	"github.com/ardwiinoo/tunas/internal/forms"
 	"github.com/ardwiinoo/tunas/internal/ghbackup"
@@ -143,6 +144,12 @@ func serve() error {
 	monitor.Res = statusSvc
 	projSvc := &projreport.Service{DB: db, Now: time.Now, Loc: cfg.Location}
 	appsSvc := &apps.Service{DB: db, Now: time.Now, Loc: cfg.Location, Log: log}
+	domainSvc := &domaincmd.Service{DB: db, Now: time.Now, Loc: cfg.Location, Log: log}
+	if n, err := domainSvc.Seed(ctx); err != nil {
+		return err
+	} else if n > 0 {
+		log.Info("domain categories seeded", "new", n)
+	}
 	if n, err := appsSvc.Seed(ctx, config.DefaultAppSeed()); err != nil {
 		return err
 	} else if n > 0 {
@@ -224,6 +231,15 @@ func serve() error {
 				return bot.Reply{Text: "Maaf, ada gangguan di server. Coba lagi sebentar."}, true
 			}
 			return bot.Reply{Text: text}, true
+		case "domain":
+			text, err := domainSvc.Command(ctx, args)
+			if err != nil {
+				log.Error("domain command failed", "err", err)
+				return bot.Reply{Text: "Maaf, ada gangguan di server. Coba lagi sebentar."}, true
+			}
+			return bot.Reply{Text: text}, true
+		case "tegur":
+			return bot.Reply{Text: tegurCommand(ctx, db, args, log)}, true
 		case "laporan":
 			card, err := eodSvc.Command(ctx, args)
 			if err != nil {
@@ -257,6 +273,15 @@ func serve() error {
 			r.Keep = r.Text == ""
 			return r
 		}
+		if card, ok, err := domainSvc.Callback(ctx, data); ok {
+			if err != nil {
+				log.Error("domain callback failed", "err", err)
+				return bot.Reply{Toast: "Gagal menyimpan kategori.", Keep: true}
+			}
+			r := bot.Reply{Text: card.Text, Toast: card.Toast}
+			r.Keep = r.Text == ""
+			return r
+		}
 		if card, ok, err := appsSvc.Callback(ctx, data); ok {
 			if err != nil {
 				log.Error("apps callback failed", "err", err)
@@ -285,7 +310,7 @@ func serve() error {
 		Handler: api.New(log, api.Options{DB: db, StatusSummary: statusSvc.Summary,
 			Calendar: calendarAPI{wl},
 			Command: func(ctx context.Context, cmd, args string) (string, bool) {
-				return laptopCommand(ctx, cmd, args, cmds, statusSvc, appsSvc, wl, cfg.Location)
+				return laptopCommand(ctx, cmd, args, cmds, statusSvc, appsSvc, domainSvc, wl, cfg.Location)
 			},
 			// the bubble uses the same pipeline as Telegram (intent, fixed
 			// queries, confirmation), plus "cari ..." for web search
@@ -334,6 +359,18 @@ func serve() error {
 		return tgBot.SendReply(ctx, cfg.TelegramOwnerID, appsReply(c))
 	}
 	wg.Go(func() { appsSvc.Run(ctx) })
+	domainSvc.Send = func(ctx context.Context, c domaincmd.Card) error {
+		r := bot.Reply{Text: c.Text}
+		for _, row := range c.Rows {
+			var out []bot.Button
+			for _, b := range row {
+				out = append(out, bot.Button{Text: b.Text, Data: b.Data})
+			}
+			r.Rows = append(r.Rows, out)
+		}
+		return tgBot.SendReply(ctx, cfg.TelegramOwnerID, r)
+	}
+	wg.Go(func() { domainSvc.Run(ctx) })
 	wg.Go(func() { _ = tgBot.Run(ctx) })
 	wg.Go(func() { asst.RunDaily(ctx, tgBot) })
 	wg.Go(func() { monitor.Run(ctx, time.Minute) }) // offline notice ~15 min after the last contact
@@ -701,7 +738,7 @@ func (c calendarAPI) Delete(ctx context.Context, id int64) error {
 
 // laptopCommand runs a slash command from the laptop's bubble and returns its text.
 func laptopCommand(ctx context.Context, cmd, args string, cmds *bot.Commands, st *status.Service, ap *apps.Service,
-	wl *worklog.Service, loc *time.Location) (string, bool) {
+	dom *domaincmd.Service, wl *worklog.Service, loc *time.Location) (string, bool) {
 	const maxText = 3500
 	var text string
 	switch cmd {
@@ -717,6 +754,12 @@ func laptopCommand(ctx context.Context, cmd, args string, cmds *bot.Commands, st
 			return "", false
 		}
 		text = c.Text
+	case "domain":
+		t, err := dom.Command(ctx, args)
+		if err != nil {
+			return "", false
+		}
+		text = t
 	case "rekap":
 		month := time.Now().In(loc)
 		if f := strings.Fields(args); len(f) > 0 {
@@ -743,4 +786,25 @@ func laptopCommand(ctx context.Context, cmd, args string, cmds *bot.Commands, st
 		text = string(r[:maxText]) + "…"
 	}
 	return text, true
+}
+
+// tegurCommand is /tegur [on|off]: the distraction nudge on the laptop.
+func tegurCommand(ctx context.Context, db *store.DB, args string, log *slog.Logger) string {
+	on := true
+	if _, err := db.GetSetting(ctx, api.TegurEnabledKey, &on); err != nil {
+		log.Error("tegur setting failed", "err", err)
+		return "Maaf, ada gangguan di server. Coba lagi sebentar."
+	}
+	switch strings.ToLower(strings.TrimSpace(args)) {
+	case "on", "off":
+		on = strings.EqualFold(strings.TrimSpace(args), "on")
+		if err := db.SetSetting(ctx, api.TegurEnabledKey, on); err != nil {
+			log.Error("tegur setting failed", "err", err)
+			return "Maaf, ada gangguan di server. Coba lagi sebentar."
+		}
+		return "✅ Teguran saat kelamaan di hiburan sekarang " + map[bool]string{true: "on", false: "off"}[on] + ". Laptop mengikutinya dalam ≤ 2 menit."
+	case "":
+		return "Teguran saat kelamaan di hiburan: " + map[bool]string{true: "on", false: "off"}[on] + "\nPakai: /tegur on|off"
+	}
+	return "Pakai: /tegur on|off"
 }

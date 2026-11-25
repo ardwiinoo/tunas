@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <title>Tunas: pengaturan ekstensi</title>
+  <style>
+    body { font: 14px system-ui, sans-serif; max-width: 460px; margin: 24px auto; color: #2c2c2a; }
+    label { display: block; margin-top: 14px; font-weight: 600; }
+    input { width: 100%; padding: 6px; box-sizing: border-box; font: inherit; }
+    button { margin-top: 16px; padding: 6px 14px; font: inherit; }
+    #status { margin-top: 12px; min-height: 1.2em; }
+    p.note { color: #5f5e5a; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>Tunas: catat domain situs</h1>
+  <p class="note">Ekstensi ini hanya mengirim nama domain tab aktif (mis. <code>youtube.com</code>) ke agen Tunas di laptop ini.
+    Tidak ada path, judul halaman, atau isi halaman, dan jendela penyamaran tidak dipantau.</p>
+  <label for="token">Token ekstensi</label>
+  <input id="token" type="password" autocomplete="off" placeholder="Tempel dari menu tray: Salin token ekstensi">
+  <label for="port">Port agen</label>
+  <input id="port" type="number" min="1024" max="65535" value="47821">
+  <button id="save">Simpan dan tes</button>
+  <div id="status" role="status"></div>
+  <script type="module" src="options.js"></script>
+</body>
+</html>

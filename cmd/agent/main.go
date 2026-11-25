@@ -162,6 +162,12 @@ func run(cfgPath string, debug, background bool) error {
 	log.Info("agent started", "version", version, "server", cfg.ServerURL, "overlay", cfg.Overlay.Enabled, "background", background)
 	statePath := filepath.Join(appDir("APPDATA", os.UserConfigDir), "state.json")
 	uiState := agent.LoadUIState(statePath)
+	if uiState.ExtensionToken == "" {
+		uiState.ExtensionToken = agent.NewExtensionToken()
+		if err := agent.SaveUIState(statePath, uiState); err != nil {
+			log.Warn("state.json not saved", "err", err)
+		}
+	}
 	client := agent.NewClient(cfg.ServerURL, cfg.DeviceToken)
 	a := &agent.Agent{
 		Cfg:            cfg,
@@ -179,6 +185,11 @@ func run(cfgPath string, debug, background bool) error {
 		a.Extractor, a.Titles = ext, projects.NewReader()
 	}
 	a.SetProjects(uiState.ProjectsEnabled)
+	a.SetBrowsers(cfg.Extension.Browsers)
+	a.SetDomains(uiState.DomainsEnabled)
+	br := &bridgeCtl{parent: ctx, cfg: cfg.Extension, token: uiState.ExtensionToken, a: a, log: log}
+	defer br.Set(false)
+	br.Set(uiState.DomainsEnabled)
 
 	// The window also carries the tray icon, so it runs even when the
 	// character is disabled in config.yaml (tray only).
@@ -202,9 +213,15 @@ func run(cfgPath string, debug, background bool) error {
 		time.Duration(cfg.Speech.MinSeconds*float64(time.Second)), time.Duration(cfg.Speech.MaxSeconds*float64(time.Second)))
 	ov.OnPause = a.SetPaused
 	ov.OnProjects = a.SetProjects
+	ov.OnDomains = func(on bool) {
+		a.SetDomains(on)
+		br.Set(on)
+	}
+	a.OnNudge = ov.Nudge
+	ov.OnTegur = a.TegurAnswer
 	exe, _ := os.Executable()
 	ov.SetTray(overlay.TrayOptions{
-		Host: &host{a: a, client: client, statePath: statePath, log: log,
+		Host: &host{token: uiState.ExtensionToken, a: a, client: client, statePath: statePath, log: log,
 			cal: &agent.Calendar{API: client, Cache: &agent.CalCache{Path: filepath.Join(dataDir(), "calendar.json"), Now: time.Now}}},
 		State: uiState, Registry: agent.UserRunKey{}, ExePath: exe,
 		ConfigDir:      appDir("APPDATA", os.UserConfigDir),
@@ -235,6 +252,7 @@ func run(cfgPath string, debug, background bool) error {
 
 // host is what the tray and the worklog bubble need from the agent.
 type host struct {
+	token     string
 	a         *agent.Agent
 	client    *agent.Client
 	statePath string
@@ -254,6 +272,8 @@ func (c calSource) AddOn(ctx context.Context, date, text string) (agent.WriteRes
 	c.ForgetCached()
 	return res, err
 }
+
+func (h *host) ExtensionToken() string { return h.token }
 
 func (h *host) Calendar() overlay.CalendarSource { return calSource{h.cal, h.a} }
 

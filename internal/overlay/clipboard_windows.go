@@ -21,6 +21,10 @@ var (
 	pGlobalLock       = kernel32.NewProc("GlobalLock")
 	pGlobalUnlock     = kernel32.NewProc("GlobalUnlock")
 	pGlobalSize       = kernel32.NewProc("GlobalSize")
+	pGlobalAlloc      = kernel32.NewProc("GlobalAlloc")
+	pGlobalFree       = kernel32.NewProc("GlobalFree")
+	pEmptyClipboard   = user32.NewProc("EmptyClipboard")
+	pSetClipboardData = user32.NewProc("SetClipboardData")
 )
 
 const cfUnicodeText = 13
@@ -68,4 +72,46 @@ func readClipboard() (string, error) {
 		end++
 	}
 	return windows.UTF16ToString(units[:end]), nil
+}
+
+// writeClipboard puts text on the clipboard (only for "Salin token ekstensi
+// browser", on the owner's click).
+func writeClipboard(text string) error {
+	u, err := windows.UTF16FromString(text)
+	if err != nil {
+		return err
+	}
+	const gmemMoveable = 0x2
+	h, _, _ := pGlobalAlloc.Call(gmemMoveable, uintptr(len(u)*2))
+	if h == 0 {
+		return errors.New("out of memory")
+	}
+	p, _, _ := pGlobalLock.Call(h)
+	if p == 0 {
+		pGlobalFree.Call(h) //nolint:errcheck
+		return errors.New("clipboard memory not lockable")
+	}
+	ptr := *(*unsafe.Pointer)(unsafe.Pointer(&p))
+	copy(unsafe.Slice((*uint16)(ptr), len(u)), u)
+	pGlobalUnlock.Call(h) //nolint:errcheck
+
+	opened := false
+	for i := 0; i < 10; i++ {
+		if r, _, _ := pOpenClipboard.Call(0); r != 0 {
+			opened = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !opened {
+		pGlobalFree.Call(h) //nolint:errcheck
+		return errors.New("clipboard busy")
+	}
+	defer pCloseClipboard.Call() //nolint:errcheck
+	pEmptyClipboard.Call()       //nolint:errcheck
+	if r, _, _ := pSetClipboardData.Call(cfUnicodeText, h); r == 0 {
+		pGlobalFree.Call(h) //nolint:errcheck
+		return errors.New("clipboard not writable")
+	}
+	return nil // the clipboard owns the memory now
 }

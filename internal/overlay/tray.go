@@ -81,6 +81,8 @@ const (
 	CmdPause
 	CmdWorklogBubbles
 	CmdProjects
+	CmdDomains
+	CmdCopyToken
 	CmdWriteWorklog
 	CmdCalendar
 	CmdClipboard
@@ -111,6 +113,7 @@ type MenuInfo struct {
 	Paused         bool
 	WorklogBubbles bool
 	Projects       bool // "Catat proyek editor"
+	Domains        bool // "Catat domain situs"
 	CharacterShown bool
 	HasLog         bool
 	HasConfigDir   bool
@@ -137,6 +140,8 @@ func TrayMenu(i MenuInfo) []MenuItem {
 		MenuItem{ID: CmdPause, Text: MenuPause, Checked: i.Paused},
 		MenuItem{ID: CmdWorklogBubbles, Text: "Pengingat worklog di layar", Checked: i.WorklogBubbles},
 		MenuItem{ID: CmdProjects, Text: "Catat proyek editor", Checked: i.Projects},
+		MenuItem{ID: CmdDomains, Text: "Catat domain situs", Checked: i.Domains},
+		MenuItem{ID: CmdCopyToken, Text: "Salin token ekstensi browser"},
 		MenuItem{ID: CmdWriteWorklog, Text: "Tulis worklog…"},
 		MenuItem{ID: CmdCalendar, Text: "Kalender worklog…"},
 		MenuItem{ID: CmdClipboard, Text: "Tulis worklog dari clipboard"},

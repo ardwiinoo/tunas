@@ -13,6 +13,7 @@ import (
 
 	"github.com/ardwiinoo/tunas/internal/activity"
 	"github.com/ardwiinoo/tunas/internal/agentstatus"
+	"github.com/ardwiinoo/tunas/internal/domaincmd"
 	"github.com/ardwiinoo/tunas/internal/projreport"
 	"github.com/ardwiinoo/tunas/internal/reminders"
 	"github.com/ardwiinoo/tunas/internal/search"
@@ -56,8 +57,10 @@ const helpText = `Halo, aku Tunas 🌱
 /libur [YYYY-MM-DD] — tandai libur (tanpa pengingat); /kerja [YYYY-MM-DD] — tandai hari kerja
 /worklog [on|off|jam 10:30,13:30,16:30|penutup 17:30|sync] — pengingat dan cadangan worklog
 /rekap [YYYY-MM] [ai] — rekap worklog bulanan
+/domain [hari|minggu] — waktu per situs (hanya nama domain); /domain <situs> <kategori>|blok|hapus
 /proyek [hari|minggu|bulan] — waktu per proyek coding; /proyek alias|blok|hapus <nama>
 /laporan [on|off|jam HH:MM|sekarang] — laporan akhir hari
+/tegur [on|off] — teguran saat kelamaan di hiburan (aplikasi atau situs)
 /apps [hari|minggu] — aplikasi yang dipakai dan kategorinya (ketuk tombol untuk mengubah); /kategori <app> <kategori>
 /status — status agen, server, VPS, dan LLM (tombol: Segarkan/Agen/VPS/LLM/24 jam)
 /settings — pengaturan (mis. kabar laptop offline/online)
@@ -277,6 +280,8 @@ var settingDefs = []struct {
 	{"notif_status", agentstatus.SettingNotify, "kabar saat laptop offline > 15 menit / kembali online", false},
 	{"notif_sumber", status.KeyAlertsOn, "peringatan memori, disk, kontainer, dan pemakaian LLM", false},
 	{"proyek_llm", projreport.KeyIncludeLLM, "izinkan nama proyek dikirim ke AI saat /tanya (bawaan: mati)", true},
+	{"domain_llm", domaincmd.KeyIncludeLLM, "izinkan nama situs dikirim ke AI (/tanya dan ringkasan harian; bawaan: mati)", true},
+	{"notif_domain", domaincmd.KeyNotify, "tanya kategori situs baru yang sudah dibuka ≥ 15 menit", false},
 }
 
 func (c *Commands) settings(ctx context.Context, args string) (string, error) {
@@ -388,6 +393,13 @@ func (c *Commands) today(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if sec := projreport.Section(ps, 5); sec != "" {
+		out += "\n\n" + sec
+	}
+	ds, err := c.DB.DomainTotalsBetween(ctx, from, to)
+	if err != nil {
+		return "", err
+	}
+	if sec := domaincmd.Section(ds, 5); sec != "" {
 		out += "\n\n" + sec
 	}
 	return out, nil

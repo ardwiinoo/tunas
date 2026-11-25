@@ -21,6 +21,8 @@ type Host interface {
 	Calendar() CalendarSource
 	// Command runs a whitelisted slash command on the server.
 	Command(ctx context.Context, cmd, args string) (agent.CommandResult, error)
+	// ExtensionToken is the secret the browser extension needs (made on first use).
+	ExtensionToken() string
 	// StatusReport is the status card: live local numbers plus the server summary.
 	StatusReport(ctx context.Context) string
 	// Status is the tray's first line, e.g. "Tunas · online · sinkron 12 d lalu".
