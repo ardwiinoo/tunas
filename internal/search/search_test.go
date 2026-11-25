@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -125,5 +126,75 @@ func TestErrorsDoNotLeakTheKey(t *testing.T) {
 	_, err := c.Search(context.Background(), "q", false)
 	if err == nil || strings.Contains(err.Error(), key) || strings.Contains(err.Error(), "/search") {
 		t.Fatalf("error text must carry neither the key nor the request URL: %v", err)
+	}
+}
+
+// roundTripFunc lets a test choose the transport failure.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type netTimeout struct{}
+
+func (netTimeout) Error() string   { return "dial tcp: i/o timeout" }
+func (netTimeout) Timeout() bool   { return true }
+func (netTimeout) Temporary() bool { return true }
+
+// Each failure has its own error, and the elapsed time is measured on
+// failures too (the log's ms used to be 0 for every transport error).
+func TestTransportFailuresAreTold(t *testing.T) {
+	expired, cancel2 := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel2()
+	<-expired.Done()
+
+	for name, tc := range map[string]struct {
+		ctx  context.Context
+		fail error
+		want error
+	}{
+		"dns":                    {context.Background(), &net.DNSError{Err: "no such host", Name: "api.tavily.com"}, ErrDNS},
+		"connect timeout":        {context.Background(), &net.OpError{Op: "dial", Err: netTimeout{}}, ErrNetTimeout},
+		"limit hit":              {context.Background(), context.DeadlineExceeded, ErrTimeout},
+		"expired before sending": {expired, nil, ErrBudget},
+	} {
+		c := NewTavily(key)
+		c.HTTP = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			time.Sleep(20 * time.Millisecond)
+			return nil, tc.fail
+		})}
+		res, err := c.Search(tc.ctx, "q", false)
+		if !errors.Is(err, tc.want) {
+			t.Errorf("%s: %v, want %v", name, err, tc.want)
+		}
+		if errors.Is(tc.want, ErrTimeout) == false && errors.Is(err, ErrTimeout) {
+			t.Errorf("%s must not be called a search timeout", name)
+		}
+		if tc.fail != nil && res.Elapsed < 10*time.Millisecond {
+			t.Errorf("%s: elapsed %s, want the real wait", name, res.Elapsed)
+		}
+	}
+	// a canceled caller is not a timeout
+	c := NewTavily(key)
+	c.HTTP = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, context.Canceled })}
+	if _, err := c.Search(context.Background(), "q", false); !errors.Is(err, context.Canceled) || errors.Is(err, ErrTimeout) {
+		t.Errorf("canceled → %v", err)
+	}
+}
+
+// A caller with little time left still gets the search's own 8 s limit
+// applied as a fresh child (never longer than the caller's own deadline).
+func TestSearchAnswersWithinCallersDeadline(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		_, _ = w.Write([]byte(bigResponse(2, 50)))
+	}))
+	defer srv.Close()
+	c := NewTavily(key)
+	c.BaseURL = srv.URL
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := c.Search(ctx, "q", false)
+	if err != nil || len(res.Results) != 2 || res.Elapsed < 250*time.Millisecond {
+		t.Fatalf("%v, %d results, %s", err, len(res.Results), res.Elapsed)
 	}
 }

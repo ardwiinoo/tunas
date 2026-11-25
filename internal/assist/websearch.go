@@ -21,13 +21,13 @@ import (
 // context stays under ~2.500 tokens even when Tavily returns thousands of
 // characters per hit (free models have small per-minute token limits).
 const (
-	maxResults  = 5
-	maxSnippet  = 350
-	maxQueryLen = 300
-	searchTotal = 20 * time.Second // the whole /cari, search plus answer
-	minSources  = 2
-	maxSources  = 3
-	deepPrefix  = "dalam "
+	maxResults   = 5
+	maxSnippet   = 350
+	maxQueryLen  = 300
+	answerBudget = 12 * time.Second // the model's answer; the web request has its own 8 s (12 s deep) limit
+	minSources   = 2
+	maxSources   = 3
+	deepPrefix   = "dalam "
 )
 
 // Source is a result the answer points to.
@@ -97,8 +97,11 @@ func (a *Assistant) Search(ctx context.Context, args string) SearchReply {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, searchTotal)
-	defer cancel()
+	// Each step gets its own fresh budget from the caller's context: the web
+	// request has its own limit (8 s, 12 s deep) inside the search client, the
+	// model's answer gets answerBudget. They are not carved out of one shared
+	// deadline, so a slow search cannot starve the answer, and an earlier step
+	// cannot leave the search with an expired context.
 	res, err := a.Searcher.Search(ctx, query, deep)
 	a.Log.Info("web search", "ok", err == nil, "deep", deep, "results", len(res.Results), "credits", res.Credits,
 		"ms", res.Elapsed.Milliseconds(), "err", errKind(err))
@@ -109,7 +112,9 @@ func (a *Assistant) Search(ctx context.Context, args string) SearchReply {
 	if len(res.Results) == 0 {
 		return SearchReply{Text: "Tidak ada hasil yang relevan untuk: " + query + note, Searched: true}
 	}
-	text, sources := a.answerSearch(ctx, query, res)
+	actx, cancel := context.WithTimeout(ctx, answerBudget)
+	defer cancel()
+	text, sources := a.answerSearch(actx, query, res)
 	return SearchReply{Text: strings.TrimSpace(text) + note, Sources: sources, Searched: true}
 }
 
@@ -126,8 +131,16 @@ func errKind(err error) string {
 		return "432/433"
 	case errors.Is(err, search.ErrRate):
 		return "429"
+	case errors.Is(err, search.ErrBudget):
+		return "budget_spent_before_send"
 	case errors.Is(err, search.ErrTimeout):
-		return "timeout"
+		return "request_timeout"
+	case errors.Is(err, search.ErrNetTimeout):
+		return "network_timeout"
+	case errors.Is(err, search.ErrDNS):
+		return "dns"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
 	}
 	var se *search.StatusError
 	if errors.As(err, &se) {
@@ -148,6 +161,12 @@ func searchErrorText(err error) string {
 		return "Kuota Tavily habis (432/433): batas paket atau batas bayar-sesuai-pakai terlewati. Cek dashboard Tavily."
 	case errors.Is(err, search.ErrRate):
 		return "Pencarian terlalu sering (429). Tunggu sebentar lalu coba lagi."
+	case errors.Is(err, search.ErrBudget):
+		return "Waktu permintaan sudah habis sebelum pencarian sempat dikirim. Coba lagi."
+	case errors.Is(err, search.ErrNetTimeout):
+		return "Tidak bisa tersambung ke layanan pencarian web (jaringan timeout). Coba lagi nanti."
+	case errors.Is(err, search.ErrDNS):
+		return "Alamat layanan pencarian web tidak bisa ditemukan (DNS gagal). Cek jaringan server."
 	case errors.Is(err, search.ErrTimeout), errors.Is(err, context.DeadlineExceeded):
 		return "Pencarian web terlalu lama menjawab. Coba lagi."
 	case errors.As(err, &se):

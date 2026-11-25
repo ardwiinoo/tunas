@@ -47,7 +47,17 @@ var (
 	ErrAuth     = errors.New("web search key rejected (401)") // wrong / missing / expired
 	ErrQuota    = errors.New("web search quota exhausted")    // 432 plan limit, 433 pay-as-you-go limit
 	ErrRate     = errors.New("web search rate limited (429)") // too fast
-	ErrTimeout  = errors.New("web search timed out")
+	// ErrBudget: the caller's context was already over before the request was
+	// sent (an earlier step used up its time). Nothing reached Tavily.
+	ErrBudget = errors.New("web search: caller's time was already used up before sending")
+	// ErrTimeout: the request was sent and Tavily did not answer within the
+	// search's own limit (BasicTimeout / DeepTimeout).
+	ErrTimeout = errors.New("web search timed out waiting for the answer")
+	// ErrNetTimeout: the network gave up (connect or TLS handshake) before the
+	// limit; the request never got to Tavily.
+	ErrNetTimeout = errors.New("web search network timeout (connect/TLS)")
+	// ErrDNS: the host name could not be resolved.
+	ErrDNS = errors.New("web search DNS failure")
 )
 
 // StatusError is any other non-2xx answer.
@@ -84,6 +94,11 @@ func (t *Tavily) Search(ctx context.Context, query string, deep bool) (Response,
 	if deep {
 		depth, limit = "advanced", DeepTimeout
 	}
+	// The limit is a fresh timeout on the caller's context. If the caller's
+	// context is already over, say so instead of calling it a search timeout.
+	if ctx.Err() != nil {
+		return Response{}, ErrBudget
+	}
 	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	max := t.MaxResults
@@ -102,11 +117,11 @@ func (t *Tavily) Search(ctx context.Context, query string, deep bool) (Response,
 	req.Header.Set("Content-Type", "application/json")
 	start := time.Now()
 	resp, err := t.HTTP.Do(req)
+	el := time.Since(start) // measured on failures too, so the log's ms is the real wait
 	if err != nil {
-		return Response{}, classify(ctx, err)
+		return Response{Elapsed: el}, classify(ctx, err)
 	}
 	defer resp.Body.Close()
-	el := time.Since(start)
 	switch resp.StatusCode {
 	case http.StatusUnauthorized:
 		drain(resp.Body)
@@ -140,15 +155,21 @@ func (t *Tavily) Search(ctx context.Context, query string, deep bool) (Response,
 
 func drain(r io.Reader) { _, _ = io.Copy(io.Discard, io.LimitReader(r, 8192)) }
 
-// classify turns transport errors into ErrTimeout where it applies and
-// strips the request URL from the rest.
+// classify names why a request failed: the search's own limit, the network
+// (connect/TLS), DNS, or the caller going away. ctx is the request's context.
+// The request URL is stripped from the rest.
 func classify(ctx context.Context, err error) error {
+	var dns *net.DNSError
 	var ne net.Error
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()) {
-		return ErrTimeout
-	}
-	if errors.Is(err, context.Canceled) {
+	switch {
+	case errors.Is(err, context.Canceled) && !errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return err
+	case errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded):
+		return ErrTimeout
+	case errors.As(err, &dns):
+		return fmt.Errorf("%w: %s", ErrDNS, dns.Err)
+	case errors.As(err, &ne) && ne.Timeout():
+		return ErrNetTimeout
 	}
 	var ue interface{ Unwrap() error }
 	if errors.As(err, &ue) && ue.Unwrap() != nil {

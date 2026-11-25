@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -209,5 +211,90 @@ func TestSearchCredits(t *testing.T) {
 	got := a.Search(ctx, "q").Text
 	if ft.calls != calls || !strings.Contains(got, "Jatah pencarian web bulan ini habis (6/5") {
 		t.Fatalf("exhausted: %d calls, %q", ft.calls-calls, got)
+	}
+}
+
+// slowTavily is the real client against a fake Tavily that answers after d.
+func slowTavily(t *testing.T, d time.Duration) *search.Tavily {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(d)
+		_, _ = w.Write([]byte(`{"answer":"Jawaban dari web.","results":[{"title":"A","url":"https://a.id/x","content":"isi a"},{"title":"B","url":"https://b.id/y","content":"isi b"}],"usage":{"credits":1}}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := search.NewTavily("tvly-test-key")
+	c.BaseURL = srv.URL
+	return c
+}
+
+// Regression (/cari always failed with "timeout", ms 0): the search must
+// succeed from both entry points, Telegram (SearchText) and the bubble
+// (Search), when the fake Tavily takes 1 s, even though the caller's context
+// carries a deadline that earlier steps (intent, quota check) already ate into.
+func TestSearchSucceedsFromTelegramAndBubbleWhenTheCallerHasLittleTimeLeft(t *testing.T) {
+	// 20 s total budget with ~17 s spent: 3 s left, enough for a 1 s search
+	// plus the answer, but not for the old shared 20 s child to matter.
+	callerCtx := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.Background(), 3*time.Second)
+	}
+	for name, run := range map[string]func(a *Assistant, ctx context.Context) SearchReply{
+		"telegram": func(a *Assistant, ctx context.Context) SearchReply {
+			return SearchReply{Text: a.SearchText(ctx, "berita hari ini"), Searched: true}
+		},
+		"bubble": func(a *Assistant, ctx context.Context) SearchReply { return a.Search(ctx, "berita hari ini") },
+	} {
+		f := &fakeLLM{replies: []string{"Ringkasan [1] dan [2]."}}
+		a, _ := searchRig(t, f, &fakeTavily{})
+		a.Searcher = slowTavily(t, time.Second)
+		ctx, cancel := callerCtx()
+		start := time.Now()
+		r := run(a, ctx)
+		cancel()
+		if !strings.HasPrefix(r.Text, "Ringkasan [1] dan [2].") || !strings.Contains(r.Text, "https://a.id/x") {
+			t.Errorf("%s: %q", name, r.Text)
+		}
+		if el := time.Since(start); el < time.Second || el > 2500*time.Millisecond {
+			t.Errorf("%s took %s", name, el)
+		}
+	}
+}
+
+// The search gets the caller's context as is (its own 8 s limit is applied
+// inside the client); it is not wrapped in a deadline shared with the answer.
+func TestSearchDoesNotTightenTheCallersDeadline(t *testing.T) {
+	var gotDeadline time.Time
+	var hasDeadline bool
+	ft := &ctxTavily{res: tenBig(), onCall: func(ctx context.Context) { gotDeadline, hasDeadline = ctx.Deadline() }}
+	f := &fakeLLM{replies: []string{"ok [1]"}}
+	a, _ := searchRig(t, f, &fakeTavily{})
+	a.Searcher = ft
+	parent, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	want, _ := parent.Deadline()
+	a.Search(parent, "q")
+	if !hasDeadline || !gotDeadline.Equal(want) {
+		t.Fatalf("search got deadline %v (has=%v), want the caller's %v", gotDeadline, hasDeadline, want)
+	}
+}
+
+type ctxTavily struct {
+	res    search.Response
+	onCall func(context.Context)
+}
+
+func (c *ctxTavily) Search(ctx context.Context, _ string, _ bool) (search.Response, error) {
+	c.onCall(ctx)
+	return c.res, nil
+}
+
+// Different failures are told and logged differently, none of them "timeout".
+func TestSearchErrorsAreDistinct(t *testing.T) {
+	seen := map[string]bool{}
+	for _, err := range []error{search.ErrBudget, search.ErrTimeout, search.ErrNetTimeout, search.ErrDNS} {
+		k, msg := errKind(err), searchErrorText(err)
+		if seen[k] || seen[msg] || k == "timeout" {
+			t.Errorf("%v: kind %q / message %q repeated", err, k, msg)
+		}
+		seen[k], seen[msg] = true, true
 	}
 }
