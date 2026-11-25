@@ -18,8 +18,9 @@ const CategoryEvery = 60 * time.Second
 // CategorySet is the server's mapping with its etag. Apps is nil when the
 // etag the agent sent is still current.
 type CategorySet struct {
-	ETag string
-	Apps map[string]string // lower-case app → category
+	ETag      string
+	Apps      map[string]string // lower-case app → category
+	Blocklist []string          // projects that are never recorded (always sent)
 }
 
 // CategoryAPI is the optional part of the client that serves the mapping.
@@ -32,15 +33,16 @@ type CategoryAPI interface {
 // map out when etag is current.
 func (c *Client) Categories(ctx context.Context, etag string) (CategorySet, error) {
 	var out struct {
-		ETag string            `json:"categories_etag"`
-		Apps map[string]string `json:"app_categories"`
+		ETag      string            `json:"categories_etag"`
+		Apps      map[string]string `json:"app_categories"`
+		Blocklist []string          `json:"project_blocklist"`
 	}
 	path := "/v1/agent/state"
 	if etag != "" {
 		path += "?categories_etag=" + url.QueryEscape(etag)
 	}
 	err := c.do(ctx, http.MethodGet, path, nil, &out)
-	return CategorySet{ETag: out.ETag, Apps: out.Apps}, err
+	return CategorySet{ETag: out.ETag, Apps: out.Apps, Blocklist: out.Blocklist}, err
 }
 
 // SeedCategories sends the apps of config.yaml; the server adds the ones it
@@ -126,6 +128,7 @@ func (a *Agent) RefreshCategories(ctx context.Context, api CategoryAPI) (bool, e
 	if err != nil {
 		return false, err
 	}
+	a.setBlocklist(set.Blocklist)
 	if set.Apps == nil || set.ETag == etag {
 		return false, nil
 	}

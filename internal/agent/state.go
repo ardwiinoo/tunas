@@ -15,6 +15,7 @@ type UIState struct {
 	WorklogBubbles   bool `json:"worklog_bubbles"`
 	CharacterVisible bool `json:"character_visible"`
 	AutostartOffered bool `json:"autostart_offered"`
+	ProjectsEnabled  bool `json:"projects_enabled"` // "Catat proyek editor" (Fase 8f), off by default
 }
 
 // DefaultUIState is used when there is no state.json yet.

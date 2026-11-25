@@ -143,8 +143,12 @@ func (m *Monitor) Cleanup(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	pr, err := m.DB.PruneProjectBuckets(ctx, now.Add(-ActivityRetention))
+	if err != nil {
+		return err
+	}
 	m.lastPruned = now
-	m.Log.Info("cleanup done", "activity_rows", a, "event_rows", e, "stats_rows", st)
+	m.Log.Info("cleanup done", "activity_rows", a, "event_rows", e, "stats_rows", st, "project_rows", pr)
 	return nil
 }
 

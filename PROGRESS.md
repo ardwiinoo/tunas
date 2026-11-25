@@ -347,3 +347,16 @@ Cabang `phase-8b-apps` (dari `phase-8g-status`).
 Gerbang fase (lulus, termasuk `-race`): tes pemetaan (huruf besar-kecil, aplikasi baru, berlaku mundur di ringkasan harian), etag state (peta dilewatkan bila etag sama, berubah bila isi berubah, tidak berubah bila hanya waktu ubah), seed tidak menimpa pilihan pemilik dan menolak masukan buruk, kabar sekali (ambang 15 menit, sekali per aplikasi, retry setelah kirim gagal, saklar), agen mengikuti perubahan etag dan salinan lokal.
 Belum diuji langsung: tombol di Telegram sungguhan dan nama proses IDE pemilik (harus diverifikasi lewat `/apps`).
 Menunggu pemilik **[PEMILIK]**: deploy dan penerimaan di DEPLOY.md bagian 22.
+
+## Fase 8f: Statistik proyek coding dan laporan akhir hari
+Cabang `phase-8f-projects` (dari `phase-8b-apps`).
+- [x] `internal/projects`: ekstraksi per editor (pola dari config), normalisasi, penolakan nama berkas/jalur/generik, antarmuka pembaca judul (Windows: satu berkas, `GetWindowTextW`; palsu di tes), `--probe-title`.
+- [x] Agen: agregasi per menit ke `project_buckets` lokal (hanya editor yang diizinkan, pemilik tidak idle, tidak dijeda, nama terselesaikan, bukan proyek terblok), sinkron idempoten; item tray **Catat proyek editor** (bawaan mati).
+- [x] Server: migrasi `0008_projects.sql` (`project_buckets`, `project_aliases`, `project_blocklist`), `POST /v1/agent/projects` dengan validasi ketat, blocklist di `GET /v1/agent/state`.
+- [x] `/proyek [hari|minggu|bulan]`, `alias`, `blok`, `buka`, `hapus`; `/today` dan `/rekap` memuat proyek; `/tanya` template `top_projects` (nama proyek tidak ke LLM kecuali `/settings proyek_llm on`).
+- [x] Laporan akhir hari (`/laporan on|off|jam|sekarang`) dengan rincian proyek, aplikasi teratas, sesi terpanjang, status worklog, dan saran selisih bertombol **➕ Tambah ke worklog**.
+- [ ] 8e (draf worklog per slot) belum; domain teratas di laporan menunggu 8c.
+
+Gerbang fase (lulus, termasuk `-race`): ekstraksi dengan judul sintetis (normal, `●`, extension host, tanpa folder, remote SSH/WSL, nama berkas di depan, tidak cocok pola, jalur, panjang, karakter kontrol, editor kedua); judul asli tidak pernah muncul di log (debug), seluruh isi database lokal, dan payload sinkron; pemindaian repo untuk API judul; alias (gabung lintas editor, berlaku mundur) dan blocklist (server menolak juga); saran selisih dan laporan dengan jam palsu; validasi API (jalur, panjang, huruf, detik, tanggal).
+Belum diuji langsung di Windows: pembacaan judul sungguhan, `--probe-title`, item tray, memori/CPU agen dengan pencatatan nyala.
+Menunggu pemilik **[PEMILIK]**: setel `window.title`, `--probe-title` untuk editor lain, nyalakan di tray; penerimaan di DEPLOY.md bagian 23.

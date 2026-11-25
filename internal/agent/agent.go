@@ -11,6 +11,7 @@ import (
 
 	"github.com/ardwiinoo/tunas/internal/config"
 	"github.com/ardwiinoo/tunas/internal/forms"
+	"github.com/ardwiinoo/tunas/internal/projects"
 )
 
 // API is the subset of the server client the agent uses (faked in tests).
@@ -47,6 +48,10 @@ type Agent struct {
 	StatsFile string
 	// CategoriesFile keeps the last app → category mapping from the server.
 	CategoriesFile string
+	// Extractor and Titles read the project name of an allowed editor
+	// (Fase 8f). Both nil = project recording unavailable.
+	Extractor *projects.Extractor
+	Titles    projects.TitleReader
 	// OnConn is called when the connection state changes (tray icon).
 	OnConn func(ConnState)
 	// Version is reported in the heartbeat.
@@ -75,6 +80,7 @@ type Agent struct {
 	worklogKick chan struct{}
 	stats       statsState
 	cats        categoryState
+	proj        projectState
 	lastIdle    time.Duration // idle time at the last sample
 	lastSync    time.Time     // last successful upload (tray status)
 }
@@ -178,6 +184,9 @@ func (a *Agent) SampleOnce(ctx context.Context, interval time.Duration) error {
 		if err := a.Buf.Add(ctx, now, s.App, cat, act, idl); err != nil {
 			return err
 		}
+		if !idle {
+			a.recordProject(ctx, now, s.App, act)
+		}
 	}
 	streak := a.streak.Add(cat, idle, interval)
 
@@ -209,8 +218,17 @@ func (a *Agent) applyForm(out forms.Output) {
 // CurrentForm returns the last computed output.
 func (a *Agent) CurrentForm() forms.Output { return a.last }
 
-// flush uploads pending buckets in batches. Returns the number uploaded.
+// flush uploads pending activity and project buckets. Returns the number of
+// activity buckets uploaded.
 func (a *Agent) flush(ctx context.Context) (int, error) {
+	n, err := a.flushActivity(ctx)
+	if err != nil {
+		return n, err
+	}
+	return n, a.flushProjects(ctx)
+}
+
+func (a *Agent) flushActivity(ctx context.Context) (int, error) {
 	total := 0
 	for {
 		bs, err := a.Buf.Pending(ctx, syncBatch)

@@ -30,12 +30,14 @@ import (
 	"github.com/ardwiinoo/tunas/internal/assist"
 	"github.com/ardwiinoo/tunas/internal/bot"
 	"github.com/ardwiinoo/tunas/internal/config"
+	"github.com/ardwiinoo/tunas/internal/eod"
 	"github.com/ardwiinoo/tunas/internal/forms"
 	"github.com/ardwiinoo/tunas/internal/ghbackup"
 	"github.com/ardwiinoo/tunas/internal/holidays"
 	"github.com/ardwiinoo/tunas/internal/llm"
 	"github.com/ardwiinoo/tunas/internal/llmstats"
 	"github.com/ardwiinoo/tunas/internal/ops"
+	"github.com/ardwiinoo/tunas/internal/projreport"
 	"github.com/ardwiinoo/tunas/internal/reminders"
 	"github.com/ardwiinoo/tunas/internal/search"
 	"github.com/ardwiinoo/tunas/internal/status"
@@ -139,6 +141,7 @@ func serve() error {
 		}
 	}
 	monitor.Res = statusSvc
+	projSvc := &projreport.Service{DB: db, Now: time.Now, Loc: cfg.Location}
 	appsSvc := &apps.Service{DB: db, Now: time.Now, Loc: cfg.Location, Log: log}
 	if n, err := appsSvc.Seed(ctx, config.DefaultAppSeed()); err != nil {
 		return err
@@ -180,6 +183,7 @@ func serve() error {
 		return err
 	}
 	wl := &worklog.Service{DB: db, Loc: cfg.Location, Now: time.Now, Log: log, ChatID: cfg.TelegramOwnerID}
+	eodSvc := &eod.Service{DB: db, Now: time.Now, Loc: cfg.Location, Log: log, Worklog: eodWorklog{wl}}
 	wl.Send = func(ctx context.Context, r bot.Reply) error { return tgBot.SendReply(ctx, cfg.TelegramOwnerID, r) }
 	wl.SendDoc = func(ctx context.Context, name string, data []byte, caption string) error {
 		return tgBot.SendDocument(ctx, name, bytes.NewReader(data), caption)
@@ -212,6 +216,22 @@ func serve() error {
 		if cmd == "status" {
 			return statusReply(ctx, statusSvc, args, log), true
 		}
+		switch cmd {
+		case "proyek":
+			text, err := projSvc.Command(ctx, args)
+			if err != nil {
+				log.Error("proyek command failed", "err", err)
+				return bot.Reply{Text: "Maaf, ada gangguan di server. Coba lagi sebentar."}, true
+			}
+			return bot.Reply{Text: text}, true
+		case "laporan":
+			card, err := eodSvc.Command(ctx, args)
+			if err != nil {
+				log.Error("laporan command failed", "err", err)
+				return bot.Reply{Text: "Maaf, ada gangguan di server. Coba lagi sebentar."}, true
+			}
+			return eodReply(card), true
+		}
 		if card, ok, err := appsSvc.Command(ctx, cmd, args); ok {
 			if err != nil {
 				log.Error("apps command failed", "cmd", cmd, "err", err)
@@ -228,6 +248,15 @@ func serve() error {
 		return asst.HandleText(ctx, text)
 	}
 	tgBot.OnCallback = func(ctx context.Context, data string) bot.Reply {
+		if card, ok, err := eodSvc.Callback(ctx, data); ok {
+			if err != nil {
+				log.Error("laporan callback failed", "err", err)
+				return bot.Reply{Toast: "Gagal menambahkan.", Keep: true}
+			}
+			r := eodReply(card)
+			r.Keep = r.Text == ""
+			return r
+		}
 		if card, ok, err := appsSvc.Callback(ctx, data); ok {
 			if err != nil {
 				log.Error("apps callback failed", "err", err)
@@ -293,6 +322,10 @@ func serve() error {
 		}
 	})
 	wg.Go(func() { sched.Run(ctx) })
+	eodSvc.Send = func(ctx context.Context, c eod.Card) error {
+		return tgBot.SendReply(ctx, cfg.TelegramOwnerID, eodReply(c))
+	}
+	wg.Go(func() { eodSvc.Run(ctx) })
 	appsSvc.Send = func(ctx context.Context, c apps.Card) error {
 		return tgBot.SendReply(ctx, cfg.TelegramOwnerID, appsReply(c))
 	}
@@ -585,6 +618,33 @@ func statusReply(ctx context.Context, svc *status.Service, args string, log *slo
 
 // appsReply turns an apps card into a Telegram reply.
 func appsReply(c apps.Card) bot.Reply {
+	r := bot.Reply{Text: c.Text, Toast: c.Toast}
+	for _, row := range c.Rows {
+		var out []bot.Button
+		for _, b := range row {
+			out = append(out, bot.Button{Text: b.Text, Data: b.Data})
+		}
+		r.Rows = append(r.Rows, out)
+	}
+	return r
+}
+
+// eodWorklog lets the end-of-day report ask the worklog about working days
+// and add the entries its suggestions stand for.
+type eodWorklog struct{ wl *worklog.Service }
+
+func (e eodWorklog) Workday(ctx context.Context, d time.Time) (bool, error) {
+	r, err := e.wl.Rules(ctx, d, d.AddDate(0, 0, 1))
+	return r.IsWorkday(d), err
+}
+
+func (e eodWorklog) Add(ctx context.Context, d time.Time, text string) error {
+	e.wl.Save(ctx, d, text, "eod", 0)
+	return nil
+}
+
+// eodReply turns a report card into a Telegram reply.
+func eodReply(c eod.Card) bot.Reply {
 	r := bot.Reply{Text: c.Text, Toast: c.Toast}
 	for _, row := range c.Rows {
 		var out []bot.Button

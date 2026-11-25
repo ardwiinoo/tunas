@@ -23,6 +23,7 @@ type ChatAPI interface {
 type Overlay struct {
 	CharacterOff bool
 	OnPause      func(bool)
+	OnProjects   func(bool)
 	OnQuit       func()
 	LogPath      string
 }

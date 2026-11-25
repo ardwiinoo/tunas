@@ -155,7 +155,7 @@ func (o *Overlay) trayMenu() {
 	defer pDestroyMenu.Call(m) //nolint:errcheck
 	info := MenuInfo{
 		Status: "Tunas", Queued: int(o.wlQueue.Load()), Paused: o.paused,
-		WorklogBubbles: o.tray.State.WorklogBubbles, CharacterShown: !o.charHidden,
+		WorklogBubbles: o.tray.State.WorklogBubbles, Projects: o.tray.State.ProjectsEnabled, CharacterShown: !o.charHidden,
 		HasLog: o.LogPath != "", HasConfigDir: o.tray.ConfigDir != "",
 	}
 	if o.tray.Host != nil {
@@ -208,6 +208,12 @@ func (o *Overlay) trayCommand(cmd int, info MenuInfo) {
 		}
 		o.saveState()
 		o.trayUpdate(nimModify)
+	case CmdProjects:
+		o.tray.State.ProjectsEnabled = !o.tray.State.ProjectsEnabled
+		if o.OnProjects != nil {
+			o.OnProjects(o.tray.State.ProjectsEnabled)
+		}
+		o.saveState()
 	case CmdWorklogBubbles:
 		o.tray.State.WorklogBubbles = !o.tray.State.WorklogBubbles
 		o.saveState()

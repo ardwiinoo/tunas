@@ -19,6 +19,7 @@ import (
 	"github.com/ardwiinoo/tunas/internal/agent"
 	"github.com/ardwiinoo/tunas/internal/config"
 	"github.com/ardwiinoo/tunas/internal/overlay"
+	"github.com/ardwiinoo/tunas/internal/projects"
 	"github.com/ardwiinoo/tunas/modes"
 )
 
@@ -29,8 +30,20 @@ func main() {
 	debug := flag.Bool("debug", false, "open a console window and log to it at debug level")
 	cfgPath := flag.String("config", defaultConfigPath(), "path to config.yaml")
 	background := flag.Bool("background", false, "started by Windows (autostart): no first-run questions")
+	probeTitle := flag.Bool("probe-title", false, "print the active window's process and title to the console for 10 seconds (local only, nothing is stored) to fit an editor pattern in config.yaml")
 	showStatus := flag.Bool("status", false, "print the running agent's own statistics as JSON (no token, no network) and exit")
 	flag.Parse()
+	if *probeTitle {
+		if _, err := agent.OpenConsole("Tunas agent: probe-title"); err != nil {
+			os.Exit(1)
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		projects.Probe(ctx, os.Stdout, projects.NewReader(), 10*time.Second)
+		stop()
+		fmt.Println("Tekan Enter untuk menutup...")
+		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+		return
+	}
 	if *showStatus {
 		out, err := agent.ReadStatsFile(statsPath(), time.Now())
 		if err != nil {
@@ -162,6 +175,10 @@ func run(cfgPath string, debug, background bool) error {
 		CategoriesFile: filepath.Join(dataDir(), "categories.json"),
 	}
 	a.SetPaused(uiState.TrackingPaused)
+	if ext, err := projects.NewExtractor(cfg.Projects.Editors); err == nil { // validated with the config
+		a.Extractor, a.Titles = ext, projects.NewReader()
+	}
+	a.SetProjects(uiState.ProjectsEnabled)
 
 	// The window also carries the tray icon, so it runs even when the
 	// character is disabled in config.yaml (tray only).
@@ -184,6 +201,7 @@ func run(cfgPath string, debug, background bool) error {
 	ov.ConfigureSpeech(time.Duration(cfg.Speech.MsPerChar)*time.Millisecond,
 		time.Duration(cfg.Speech.MinSeconds*float64(time.Second)), time.Duration(cfg.Speech.MaxSeconds*float64(time.Second)))
 	ov.OnPause = a.SetPaused
+	ov.OnProjects = a.SetProjects
 	exe, _ := os.Executable()
 	ov.SetTray(overlay.TrayOptions{
 		Host:  &host{a: a, client: client, statePath: statePath, log: log},
