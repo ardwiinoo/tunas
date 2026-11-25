@@ -283,6 +283,10 @@ func serve() error {
 	httpSrv := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: api.New(log, api.Options{DB: db, StatusSummary: statusSvc.Summary,
+			Calendar: calendarAPI{wl},
+			Command: func(ctx context.Context, cmd, args string) (string, bool) {
+				return laptopCommand(ctx, cmd, args, cmds, statusSvc, appsSvc, wl, cfg.Location)
+			},
 			// the bubble uses the same pipeline as Telegram (intent, fixed
 			// queries, confirmation), plus "cari ..." for web search
 			Chat: func(ctx context.Context, form, text string, history []api.ChatTurn) (api.ChatResult, error) {
@@ -654,4 +658,89 @@ func eodReply(c eod.Card) bot.Reply {
 		r.Rows = append(r.Rows, out)
 	}
 	return r
+}
+
+// calendarAPI adapts the worklog service to the laptop calendar endpoints.
+type calendarAPI struct{ wl *worklog.Service }
+
+func calErr(err error) error {
+	var bad *worklog.InputError
+	switch {
+	case errors.As(err, &bad):
+		return &api.WorklogInputError{Reason: bad.Reason}
+	case errors.Is(err, worklog.ErrGone):
+		return api.ErrCalendarGone
+	}
+	return err
+}
+
+func (c calendarAPI) Month(ctx context.Context, m string) (any, error) {
+	t, err := worklog.ParseMonth(m)
+	if err != nil {
+		return nil, &api.WorklogInputError{Reason: "invalid month"}
+	}
+	return c.wl.AgentMonth(ctx, t)
+}
+
+func (c calendarAPI) Day(ctx context.Context, d string) (any, error) {
+	t, err := worklog.ParseDate(d)
+	if err != nil {
+		return nil, &api.WorklogInputError{Reason: "invalid date"}
+	}
+	return c.wl.AgentDay(ctx, t)
+}
+
+func (c calendarAPI) Edit(ctx context.Context, id int64, text string) (any, error) {
+	e, err := c.wl.AgentEdit(ctx, id, text)
+	return e, calErr(err)
+}
+
+func (c calendarAPI) Delete(ctx context.Context, id int64) error {
+	return calErr(c.wl.AgentDelete(ctx, id))
+}
+
+// laptopCommand runs a slash command from the laptop's bubble and returns its text.
+func laptopCommand(ctx context.Context, cmd, args string, cmds *bot.Commands, st *status.Service, ap *apps.Service,
+	wl *worklog.Service, loc *time.Location) (string, bool) {
+	const maxText = 3500
+	var text string
+	switch cmd {
+	case "status":
+		c, err := st.Report(ctx, status.ViewAll)
+		if err != nil {
+			return "", false
+		}
+		text = c.Text
+	case "apps":
+		c, ok, err := ap.Command(ctx, "apps", args)
+		if err != nil || !ok {
+			return "", false
+		}
+		text = c.Text
+	case "rekap":
+		month := time.Now().In(loc)
+		if f := strings.Fields(args); len(f) > 0 {
+			t, err := worklog.ParseMonth(f[0])
+			if err != nil {
+				return "Pakai: /rekap [YYYY-MM]", true
+			}
+			month = t
+		}
+		r, err := wl.Rekap(ctx, month)
+		if err != nil {
+			return "", false
+		}
+		text = r
+	case "today", "tasks", "done", "form":
+		text = cmds.Handle(ctx, strings.TrimSpace("/"+cmd+" "+args))
+		if strings.HasPrefix(text, "Perintah tidak dikenal") {
+			return "", false
+		}
+	default:
+		return "", false
+	}
+	if r := []rune(text); len(r) > maxText {
+		text = string(r[:maxText]) + "…"
+	}
+	return text, true
 }

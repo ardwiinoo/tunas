@@ -205,6 +205,10 @@ type Overlay struct {
 	wlResCh    chan worklogResult
 	wlQueue    atomic.Int32
 
+	// worklog calendar card (nil = closed)
+	cal   *Calendar
+	calCh chan calResult
+
 	// tray (UI thread)
 	paused     bool
 	trayIcon   uintptr
@@ -237,7 +241,7 @@ func New(cfg config.AgentOverlay, chat ChatAPI, log *slog.Logger) (*Overlay, err
 	return &Overlay{
 		cfg: cfg, log: log, chat: chat, renderer: Procedural{},
 		formCh: make(chan forms.Output, 8), replyCh: make(chan chatResult, 1),
-		wlCh: make(chan agent.WorklogEvent, 4), wlResCh: make(chan worklogResult, 1),
+		wlCh: make(chan agent.WorklogEvent, 4), wlResCh: make(chan worklogResult, 1), calCh: make(chan calResult, 4),
 		measure: Measurer(mf), scale: 1, visibleMs: visibleTick,
 	}, nil
 }
@@ -364,6 +368,10 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 		o.tick(now)
 		return 0
 	case wmHotkey:
+		if o.cal != nil { // the hotkey closes the calendar
+			o.closeCalendar(now)
+			return 0
+		}
 		if o.p.State == Confirm { // hotkey on a proposal = Batal
 			o.decline(now)
 		} else {
@@ -378,6 +386,10 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 		o.onChar(uint16(wp), now)
 		return 0
 	case wmKeyDown:
+		if o.cal != nil {
+			o.calKeyDown(wp, now)
+			return 0
+		}
 		if o.p.KeysWanted() {
 			switch wp {
 			case vkUp:
@@ -398,6 +410,9 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 			return 0
 		}
 	case wmLButtonDown:
+		if o.cal != nil {
+			return 0 // the card is closed with Esc or the hotkey, not by a stray click
+		}
 		if o.p.FocusWorklog(now) { // a click answers the worklog bubble: keys work now
 			pSetForegroundWindow.Call(hwnd) //nolint:errcheck
 		} else {
@@ -406,7 +421,7 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 		o.sync(now)
 		return 0
 	case wmMouseActivate:
-		if !o.p.KeysWanted() {
+		if !o.p.KeysWanted() && o.cal == nil {
 			return maNoActivate // clicking Tunas must not steal focus
 		}
 	case wmTray:
@@ -430,6 +445,10 @@ func wndProc(hwnd, msg, wp, lp uintptr) uintptr {
 }
 
 func (o *Overlay) onChar(u uint16, now time.Time) {
+	if o.cal != nil {
+		o.calChar(u, now)
+		return
+	}
 	if u == 0x16 && o.p.Typing() { // Ctrl+V: paste, keeping the lines of a worklog
 		if text, err := readClipboard(); err == nil {
 			o.p.Paste(text, now)
@@ -483,6 +502,12 @@ func (o *Overlay) onChar(u uint16, now time.Time) {
 	case u == 0x08:
 		o.p.Backspace(now)
 	case u == 0x0D:
+		if IsCalCommand(o.p.Draft) { // /cal opens the calendar card
+			o.p.Draft = ""
+			o.p.CancelInput(now)
+			o.openCalendar(now)
+			return
+		}
 		if text := o.p.Submit(now); text != "" {
 			ctx, cancel := o.startCall()
 			go o.ask(ctx, cancel, o.p.Req(), text, o.p.Form, o.p.Context())
@@ -506,11 +531,8 @@ func (o *Overlay) onChar(u uint16, now time.Time) {
 func (o *Overlay) ask(ctx context.Context, cancel context.CancelFunc, req int, text string, f forms.Form, history []agent.ChatTurn) {
 	defer cancel()
 	start := time.Now()
-	if IsStatusCommand(text) && o.tray.Host != nil { // answered here: the numbers of this laptop come first
-		select {
-		case o.replyCh <- chatResult{req: req, reply: o.tray.Host.StatusReport(ctx)}:
-		case <-o.ctx.Done():
-		}
+	if cmd, args, ok := SlashCommand(text); ok && cmd != "cari" && o.tray.Host != nil {
+		o.slash(ctx, req, cmd, args) // slash commands never go to the LLM
 		return
 	}
 	reply, err := o.chat.Chat(ctx, text, string(f), history)
@@ -601,6 +623,7 @@ func (o *Overlay) tick(now time.Time) {
 		}
 	}
 	o.drainWorklog(now)
+	o.drainCalendar(now)
 	o.trayTick()
 	o.p.Tick(now)
 	if o.p.KeysWanted() && !wasKeys { // a proposal, or the text box back after a failure
@@ -611,13 +634,14 @@ func (o *Overlay) tick(now time.Time) {
 
 // sync applies the presenter state: show/hide, timer rate, and redraw.
 func (o *Overlay) sync(now time.Time) {
-	if o.p.Visible() != o.shown {
-		o.shown = o.p.Visible()
+	want := o.p.Visible() || o.cal != nil
+	if want != o.shown {
+		o.shown = want
 		o.visible.Store(o.shown)
 		if o.shown {
 			o.place()
 			cmd := uintptr(swShowNoActive)
-			if o.p.Typing() {
+			if o.p.Typing() || o.cal != nil {
 				cmd = swShow
 			}
 			o.render(now)                                                                          // content first, then show: no flash of stale frame
@@ -691,6 +715,11 @@ func (o *Overlay) render(now time.Time) {
 		if o.canvas == nil || o.face == nil {
 			return
 		}
+	}
+	if o.cal != nil { // the calendar card replaces the character and the bubble
+		DrawCalendar(o.canvas, o.cal, o.face, o.measure, o.scale)
+		o.present()
+		return
 	}
 	txt := o.p.BubbleText()
 	if txt != o.sceneText {

@@ -229,6 +229,8 @@ func (o *Overlay) trayCommand(cmd int, info MenuInfo) {
 		}
 		o.p.Note(TextWorklogMuted, now)
 		o.sync(now)
+	case CmdCalendar:
+		o.openCalendar(now)
 	case CmdStatus:
 		o.askStatus(now)
 		pSetForegroundWindow.Call(o.hwnd) //nolint:errcheck

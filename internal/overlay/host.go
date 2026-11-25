@@ -16,6 +16,11 @@ type Host interface {
 	AnswerPrompt(ctx context.Context, id int64, action string) error
 	// MuteWorklog switches today's worklog reminders off ("Senyapkan hari ini").
 	MuteWorklog(ctx context.Context) error
+	// Calendar is the source of the worklog calendar (server first, the
+	// cache when offline); nil = no calendar.
+	Calendar() CalendarSource
+	// Command runs a whitelisted slash command on the server.
+	Command(ctx context.Context, cmd, args string) (agent.CommandResult, error)
 	// StatusReport is the status card: live local numbers plus the server summary.
 	StatusReport(ctx context.Context) string
 	// Status is the tray's first line, e.g. "Tunas · online · sinkron 12 d lalu".
@@ -23,6 +28,37 @@ type Host interface {
 	// SaveState persists the tray switches (state.json).
 	SaveState(st agent.UIState)
 }
+
+// CalendarSource is what the calendar card needs.
+type CalendarSource interface {
+	Month(ctx context.Context, month string) (agent.CalMonth, bool, error)
+	Day(ctx context.Context, date string) (agent.CalDayView, bool, error)
+	Edit(ctx context.Context, id int64, text string) error
+	Delete(ctx context.Context, id int64) error
+	// AddOn writes entries for a day (queued while offline).
+	AddOn(ctx context.Context, date, text string) (agent.WriteResult, error)
+}
+
+// SlashCommand splits "/name args" (name lower-case letters only).
+func SlashCommand(s string) (name, args string, ok bool) {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 || s[0] != '/' {
+		return "", "", false
+	}
+	head, rest, _ := strings.Cut(s[1:], " ")
+	if head == "" || len(head) > 20 {
+		return "", "", false
+	}
+	for _, r := range head {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
+			return "", "", false
+		}
+	}
+	return strings.ToLower(head), strings.TrimSpace(rest), true
+}
+
+// IsCalCommand reports whether chat input is "/cal" (opens the calendar card).
+func IsCalCommand(s string) bool { return strings.EqualFold(strings.TrimSpace(s), "/cal") }
 
 // TrayOptions are set before Run.
 type TrayOptions struct {

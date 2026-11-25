@@ -204,7 +204,8 @@ func run(cfgPath string, debug, background bool) error {
 	ov.OnProjects = a.SetProjects
 	exe, _ := os.Executable()
 	ov.SetTray(overlay.TrayOptions{
-		Host:  &host{a: a, client: client, statePath: statePath, log: log},
+		Host: &host{a: a, client: client, statePath: statePath, log: log,
+			cal: &agent.Calendar{API: client, Cache: &agent.CalCache{Path: filepath.Join(dataDir(), "calendar.json"), Now: time.Now}}},
 		State: uiState, Registry: agent.UserRunKey{}, ExePath: exe,
 		ConfigDir:      appDir("APPDATA", os.UserConfigDir),
 		OfferAutostart: !background && !uiState.AutostartOffered,
@@ -238,6 +239,26 @@ type host struct {
 	client    *agent.Client
 	statePath string
 	log       *slog.Logger
+	cal       *agent.Calendar
+}
+
+// calSource is the calendar card's view of the agent: the server first, the
+// cache when offline, and entries written through the offline queue.
+type calSource struct {
+	*agent.Calendar
+	a *agent.Agent
+}
+
+func (c calSource) AddOn(ctx context.Context, date, text string) (agent.WriteResult, error) {
+	res, err := c.a.WriteWorklogOn(ctx, date, text, 0)
+	c.ForgetCached()
+	return res, err
+}
+
+func (h *host) Calendar() overlay.CalendarSource { return calSource{h.cal, h.a} }
+
+func (h *host) Command(ctx context.Context, cmd, args string) (agent.CommandResult, error) {
+	return h.client.RunCommand(ctx, cmd, args)
 }
 
 func (h *host) WriteWorklog(ctx context.Context, text string, promptID int64) (agent.WriteResult, error) {
