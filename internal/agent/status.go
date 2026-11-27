@@ -15,9 +15,12 @@ const (
 	ConnConnecting ConnState = iota // starting, or reconnecting after a failure (yellow)
 	ConnOnline                      // last long-poll succeeded (green)
 	ConnOffline                     // several polls in a row failed (red)
+	ConnOnlineWarn                  // online, but something needs attention soon: the mTLS certificate expires (yellow)
 )
 
-func (s ConnState) String() string { return [...]string{"connecting", "online", "offline"}[s] }
+func (s ConnState) String() string {
+	return [...]string{"connecting", "online", "offline", "online_warn"}[s]
+}
 
 // offlineAfter consecutive failed polls turn the state red.
 const offlineAfter = 3
@@ -33,9 +36,24 @@ func connAfter(failures int) ConnState {
 	return ConnOffline
 }
 
+// SetCertWarning sets a warning shown while the agent is online (the tray dot
+// turns yellow). "" clears it.
+func (a *Agent) SetCertWarning(w string) {
+	a.mu.Lock()
+	a.certWarn = w
+	conn := a.conn
+	a.mu.Unlock()
+	if conn == ConnOnline || conn == ConnOnlineWarn {
+		a.setConn(ConnOnline) // re-evaluate: yellow with a warning, green without
+	}
+}
+
 // setConn records the state and tells the tray when it changes.
 func (a *Agent) setConn(s ConnState) {
 	a.mu.Lock()
+	if s == ConnOnline && a.certWarn != "" {
+		s = ConnOnlineWarn
+	}
 	changed := s != a.conn
 	a.conn = s
 	cb := a.OnConn
@@ -155,7 +173,7 @@ func (a *Agent) StatusLine(now time.Time) string {
 	a.mu.Lock()
 	conn, last, paused := a.conn, a.lastSync, a.paused
 	a.mu.Unlock()
-	state := map[ConnState]string{ConnOnline: "online", ConnConnecting: "menyambung…", ConnOffline: "offline"}[conn]
+	state := map[ConnState]string{ConnOnline: "online", ConnConnecting: "menyambung…", ConnOffline: "offline", ConnOnlineWarn: "online · sertifikat segera kedaluwarsa"}[conn]
 	s := "Tunas · " + state
 	if paused {
 		s += " · dijeda"

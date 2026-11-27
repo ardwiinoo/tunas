@@ -15,6 +15,8 @@ func TrayTip(s agent.ConnState, paused bool) string {
 	switch s {
 	case agent.ConnOnline:
 		t += "tersambung"
+	case agent.ConnOnlineWarn:
+		t += "tersambung, sertifikat klien segera kedaluwarsa"
 	case agent.ConnConnecting:
 		t += "menyambung ulang…"
 	default:
@@ -31,7 +33,7 @@ func TrayColor(s agent.ConnState) color.RGBA {
 	switch s {
 	case agent.ConnOnline:
 		return color.RGBA{0x3F, 0xB9, 0x50, 0xFF}
-	case agent.ConnConnecting:
+	case agent.ConnConnecting, agent.ConnOnlineWarn:
 		return color.RGBA{0xE3, 0xB3, 0x41, 0xFF}
 	}
 	return color.RGBA{0xE5, 0x53, 0x4B, 0xFF}
