@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -50,11 +51,12 @@ func (e *StatusError) Error() string {
 }
 
 // NewClient creates a client. The token is sent only as a bearer header.
-func NewClient(baseURL, token string) *Client {
+// certs are optional client certificates for mTLS.
+func NewClient(baseURL, token string, certs ...tls.Certificate) *Client {
 	return &Client{
 		base:  strings.TrimRight(baseURL, "/"),
 		token: token,
-		http:  &http.Client{Timeout: 40 * time.Second},
+		http:  NewHTTPClient(certs...),
 	}
 }
 

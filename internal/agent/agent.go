@@ -76,6 +76,7 @@ type Agent struct {
 	reminders []string // due reminders waiting for their turn
 	doneAt    time.Time
 	conn      ConnState
+	certWarn  string
 	paused    bool
 
 	worklogKick chan struct{}

@@ -30,6 +30,7 @@ import (
 	"github.com/ardwiinoo/tunas/internal/assist"
 	"github.com/ardwiinoo/tunas/internal/bot"
 	"github.com/ardwiinoo/tunas/internal/config"
+	"github.com/ardwiinoo/tunas/internal/devices"
 	"github.com/ardwiinoo/tunas/internal/domaincmd"
 	"github.com/ardwiinoo/tunas/internal/eod"
 	"github.com/ardwiinoo/tunas/internal/forms"
@@ -219,6 +220,7 @@ func serve() error {
 		return bot.Reply{}, false
 	}
 	wl.ExtraCallback = rem.Callback
+	devSvc := &devices.Service{DB: db, Now: time.Now, Loc: cfg.Location}
 	tgBot.OnCommand = func(ctx context.Context, cmd, args string) (bot.Reply, bool) {
 		if cmd == "status" {
 			return statusReply(ctx, statusSvc, args, log), true
@@ -238,6 +240,13 @@ func serve() error {
 				return bot.Reply{Text: "Maaf, ada gangguan di server. Coba lagi sebentar."}, true
 			}
 			return bot.Reply{Text: text}, true
+		case "devices":
+			r, err := devSvc.Command(ctx, args)
+			if err != nil {
+				log.Error("devices command failed", "err", err)
+				return bot.Reply{Text: "Maaf, ada gangguan di server. Coba lagi sebentar."}, true
+			}
+			return r, true
 		case "tegur":
 			return bot.Reply{Text: tegurCommand(ctx, db, args, log)}, true
 		case "laporan":
@@ -264,6 +273,14 @@ func serve() error {
 		return asst.HandleText(ctx, text)
 	}
 	tgBot.OnCallback = func(ctx context.Context, data string) bot.Reply {
+		if r, ok, err := devSvc.Callback(ctx, data); ok {
+			if err != nil {
+				log.Error("devices callback failed", "err", err)
+				return bot.Reply{Toast: "Gagal.", Keep: true}
+			}
+			r.Keep = r.Text == ""
+			return r
+		}
 		if card, ok, err := eodSvc.Callback(ctx, data); ok {
 			if err != nil {
 				log.Error("laporan callback failed", "err", err)
@@ -309,6 +326,7 @@ func serve() error {
 		Addr: cfg.HTTPAddr,
 		Handler: api.New(log, api.Options{DB: db, StatusSummary: statusSvc.Summary,
 			Calendar: calendarAPI{wl},
+			Notify:   func(ctx context.Context, text string) error { return tgBot.NotifyOwner(ctx, text) },
 			Command: func(ctx context.Context, cmd, args string) (string, bool) {
 				return laptopCommand(ctx, cmd, args, cmds, statusSvc, appsSvc, domainSvc, wl, cfg.Location)
 			},
@@ -427,7 +445,7 @@ func healthcheck() error {
 	return nil
 }
 
-const deviceUsage = "usage: device create --name NAME | device list | device revoke --name NAME"
+const deviceUsage = "usage: device create --name NAME [--days N] | device list | device revoke --name NAME"
 
 const worklogUsage = `usage: tunas-server worklog import [--dry-run] [--repo owner/repo] [--dir sub] [--branch main]
   Reads every YYYYMM_daily.txt from the backup repo into the database (idempotent).
@@ -478,6 +496,7 @@ func deviceCmd(args []string, out io.Writer) error {
 	sub := args[0]
 	fs := flag.NewFlagSet("device "+sub, flag.ContinueOnError)
 	name := fs.String("name", "", "device name")
+	days := fs.Int("days", store.DefaultTokenDays, "token lifetime in days (create)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -500,7 +519,7 @@ func deviceCmd(args []string, out io.Writer) error {
 		if *name == "" || len(*name) > 64 {
 			return errors.New("--name is required (max 64 chars)")
 		}
-		d, token, err := db.CreateDevice(ctx, *name)
+		d, token, err := db.CreateDeviceDays(ctx, *name, *days)
 		if errors.Is(err, store.ErrExists) {
 			return fmt.Errorf("device %q already exists", *name)
 		}
@@ -514,16 +533,24 @@ func deviceCmd(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "%-4s %-20s %-8s %-25s %s\n", "ID", "NAME", "STATUS", "LAST SEEN", "CREATED")
+		fmt.Fprintf(out, "%-4s %-16s %-8s %-25s %-17s %s\n", "ID", "NAME", "STATUS", "LAST SEEN", "IP", "EXPIRES")
 		for _, d := range ds {
-			status, seen := "active", "-"
+			status, seen, exp, ip := "active", "-", "never", "-"
 			if d.RevokedAt != nil {
 				status = "revoked"
+			} else if d.ExpiresAt != nil && !d.ExpiresAt.After(time.Now()) {
+				status = "expired"
 			}
 			if d.LastSeenAt != nil {
 				seen = d.LastSeenAt.Format(time.RFC3339)
 			}
-			fmt.Fprintf(out, "%-4d %-20s %-8s %-25s %s\n", d.ID, d.Name, status, seen, d.CreatedAt.Format(time.RFC3339))
+			if d.ExpiresAt != nil {
+				exp = d.ExpiresAt.Format("2006-01-02")
+			}
+			if d.LastSeenIP != "" {
+				ip = devices.MaskIP(d.LastSeenIP)
+			}
+			fmt.Fprintf(out, "%-4d %-16s %-8s %-25s %-17s %s\n", d.ID, d.Name, status, seen, ip, exp)
 		}
 	case "revoke":
 		if *name == "" {

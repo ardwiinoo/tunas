@@ -3,7 +3,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"strings"
 
@@ -30,6 +29,7 @@ type Agent struct {
 	Speech                AgentSpeech         `yaml:"speech"`
 	Projects              AgentProjects       `yaml:"projects"`
 	Extension             AgentExtension      `yaml:"extension"`
+	TLS                   AgentTLS            `yaml:"tls"`
 }
 
 // DefaultExtensionID is the id of the extension in this repository's
@@ -168,9 +168,8 @@ func ParseAgent(b []byte) (*Agent, error) {
 // Validate checks value ranges. Errors never include the device token.
 func (c *Agent) Validate() error {
 	var errs []error
-	u, err := url.Parse(c.ServerURL)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-		errs = append(errs, errors.New("server_url must be an http(s) URL"))
+	if err := ValidateServerURL(c.ServerURL); err != nil {
+		errs = append(errs, err)
 	}
 	if _, err := projects.NewExtractor(c.Projects.Editors); err != nil {
 		errs = append(errs, err)
@@ -288,4 +287,12 @@ func (f AgentForms) DistractCooldown() int {
 		return f.DistractCooldownMinutes
 	}
 	return f.TegurCooldownMinutes
+}
+
+// AgentTLS holds the optional mTLS client certificate (Fase 9c). Both empty:
+// no client certificate is sent. ClientKey empty with ClientCert set: the key
+// comes from the DPAPI-protected store (tunas-agent.exe --set-client-key).
+type AgentTLS struct {
+	ClientCert string `yaml:"client_cert"` // PEM file
+	ClientKey  string `yaml:"client_key"`  // PEM file (optional, see above)
 }

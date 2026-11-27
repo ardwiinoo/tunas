@@ -63,17 +63,24 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 	}
 }
 
-// auth requires a valid, unrevoked device token.
+// auth requires a valid, unrevoked, unexpired device token.
 func (s *Server) auth(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := clientIP(r)
 		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		token = strings.TrimSpace(token)
 		if !ok || token == "" || len(token) > 256 {
+			s.authFailed(ip, "no or malformed token")
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		d, err := s.db.AuthDevice(r.Context(), token, s.now())
-		if errors.Is(err, store.ErrNotFound) {
+		d, prevIP, err := s.db.AuthDeviceIP(r.Context(), token, s.now(), ip)
+		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrExpired) {
+			why := "unknown or revoked token"
+			if errors.Is(err, store.ErrExpired) {
+				why = "expired token"
+			}
+			s.authFailed(ip, why)
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
@@ -82,6 +89,7 @@ func (s *Server) auth(h http.HandlerFunc) http.Handler {
 			writeError(w, http.StatusInternalServerError, errInternal)
 			return
 		}
+		s.authSucceeded(r.Context(), d, prevIP, ip)
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 		h(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, d)))
 	})

@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -32,6 +33,8 @@ func main() {
 	background := flag.Bool("background", false, "started by Windows (autostart): no first-run questions")
 	probeTitle := flag.Bool("probe-title", false, "print the active window's process and title to the console for 10 seconds (local only, nothing is stored) to fit an editor pattern in config.yaml")
 	showStatus := flag.Bool("status", false, "print the running agent's own statistics as JSON (no token, no network) and exit")
+	setTok := flag.Bool("set-token", false, "store the device token encrypted (Windows DPAPI): it is read from stdin, never from an argument")
+	setKey := flag.String("set-client-key", "", "store the mTLS client key (PEM file) encrypted (Windows DPAPI)")
 	flag.Parse()
 	if *probeTitle {
 		if _, err := agent.OpenConsole("Tunas agent: probe-title"); err != nil {
@@ -42,6 +45,27 @@ func main() {
 		stop()
 		fmt.Println("Tekan Enter untuk menutup...")
 		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+		return
+	}
+	if *setTok || *setKey != "" {
+		own, err := agent.OpenConsole("Tunas agent: simpan rahasia")
+		if err != nil {
+			os.Exit(1)
+		}
+		if *setTok {
+			err = setToken(*cfgPath)
+		} else {
+			err = setClientKey(*setKey)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+		}
+		if own {
+			pressEnter()
+		}
+		if err != nil {
+			os.Exit(1)
+		}
 		return
 	}
 	if *showStatus {
@@ -143,10 +167,27 @@ func run(cfgPath string, debug, background bool) error {
 		log.Error("config error", "path", cfgPath, "err", err)
 		return fmt.Errorf("load %s: %w", cfgPath, err)
 	}
-	if cfg.DeviceToken == "" {
-		err := errors.New("device_token is empty in config.yaml (create one with: tunas-server device create --name laptop)")
-		log.Error("config error", "err", err)
+	// The device token lives encrypted (DPAPI); a plain one still in
+	// config.yaml is moved there. It is kept in this local only.
+	token, err := agent.LoadDeviceToken(cfgPath, cfg.DeviceToken, tokenStore(), log)
+	if err != nil {
+		log.Error("device token", "err", err)
 		return err
+	}
+	cfg.DeviceToken = ""
+	var certs []tls.Certificate
+	var certWarn string
+	if cfg.TLS.ClientCert != "" {
+		cc, err := agent.LoadClientCert(cfg.TLS.ClientCert, cfg.TLS.ClientKey, clientKeyStore(), time.Now())
+		if err != nil {
+			log.Error("client certificate", "err", err)
+			return err
+		}
+		certs = append(certs, cc.Cert)
+		if certWarn = cc.Warn(time.Now()); certWarn != "" {
+			log.Warn(certWarn)
+		}
+		log.Info("mTLS client certificate loaded", "expires", cc.NotAfter.Format("2006-01-02"))
 	}
 
 	buf, err := agent.OpenBuffer(filepath.Join(dataDir(), "buffer.db"))
@@ -168,7 +209,7 @@ func run(cfgPath string, debug, background bool) error {
 			log.Warn("state.json not saved", "err", err)
 		}
 	}
-	client := agent.NewClient(cfg.ServerURL, cfg.DeviceToken)
+	client := agent.NewClient(cfg.ServerURL, token, certs...)
 	a := &agent.Agent{
 		Cfg:            cfg,
 		Sampler:        agent.NewSampler(),
@@ -180,6 +221,7 @@ func run(cfgPath string, debug, background bool) error {
 		StatsFile:      statsPath(),
 		CategoriesFile: filepath.Join(dataDir(), "categories.json"),
 	}
+	a.SetCertWarning(certWarn)
 	a.SetPaused(uiState.TrackingPaused)
 	if ext, err := projects.NewExtractor(cfg.Projects.Editors); err == nil { // validated with the config
 		a.Extractor, a.Titles = ext, projects.NewReader()
