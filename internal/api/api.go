@@ -30,6 +30,8 @@ type Server struct {
 	summary  func(ctx context.Context) (string, error)
 	calendar Calendar
 	command  CommandFunc
+	notify   func(ctx context.Context, text string) error // security warnings to the owner (optional)
+	watch    authWatch
 
 	statsMu   sync.Mutex
 	statsLast map[int64]time.Time // device id → when its last 5-minute sample was stored
@@ -54,6 +56,9 @@ type Options struct {
 	// whitelisted slash commands (Fase 8d). Optional.
 	Calendar Calendar
 	Command  CommandFunc
+	// Notify sends a security warning to the owner (new client address, token
+	// expiring, many failed authentications). Optional.
+	Notify func(ctx context.Context, text string) error
 }
 
 // New builds the HTTP handler.
@@ -66,7 +71,7 @@ func New(log *slog.Logger, o Options) *Server {
 	}
 	s := &Server{log: log, db: o.DB, now: o.Now, mux: http.NewServeMux(),
 		rl: newRateLimiter(o.RatePerMinute, o.RateBurst, o.Now), chat: o.Chat, confirm: o.Confirm, worklog: o.Worklog, summary: o.StatusSummary,
-		calendar: o.Calendar, command: o.Command}
+		calendar: o.Calendar, command: o.Command, notify: o.Notify}
 	s.mux.HandleFunc("GET /healthz", s.healthz)
 	s.routes()
 	return s

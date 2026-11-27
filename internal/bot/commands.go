@@ -63,6 +63,7 @@ const helpText = `Halo, aku Tunas 🌱
 /tegur [on|off] — teguran saat kelamaan di hiburan (aplikasi atau situs)
 /apps [hari|minggu] — aplikasi yang dipakai dan kategorinya (ketuk tombol untuk mengubah); /kategori <app> <kategori>
 /status — status agen, server, VPS, dan LLM (tombol: Segarkan/Agen/VPS/LLM/24 jam)
+/devices — perangkat terdaftar (IP disamarkan, kedaluwarsa token) dan tombol Cabut
 /settings — pengaturan (mis. kabar laptop offline/online)
 /ping — cek hidup
 
